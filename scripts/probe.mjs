@@ -62,6 +62,11 @@ if (url) {
     } else if (/open_data_json/.test(u)) {
       let t = buf.toString('utf8');
       if (t.includes('\uFFFD')) t = new TextDecoder('windows-1251').decode(buf);
+      try {
+        console.log(JSON.stringify(JSON.parse(t), null, 1).slice(0, 9000));
+      } catch (e) {
+        console.log('не JSON', e.message);
+      }
       const title = (/"(?:title|name|nazva)[^"]*"\s*:\s*"([^"]{3,200})"/i.exec(t) || [])[1];
       const links = [...new Set(t.match(/https?:[^"\s]+?\.(?:zip|csv|json|xml)/gi) || [])].map((x) => x.replace(/\\\//g, '/'));
       console.log(`  JSON ${u.split('=').pop()} | ${title} | ${links.slice(-3).join(' , ')} | ${t.slice(0, 260).replace(/\s+/g, ' ')}`);
