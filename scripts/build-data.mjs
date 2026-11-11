@@ -166,8 +166,9 @@ for (const key of keys) {
   shards.delete(key);
 }
 
-// Надто поширені слова не мають пошукової цінності і роздувають індекс
-const STOP_LIMIT = Math.max(+(args.stop || 0) || 0, Math.round(finalRows * 0.05), 50);
+// Лише слова, які є майже в кожному записі (назви ролей), не входять до індексу.
+// Поширені імена залишаються: без них запит «прізвище імʼя» був би неточним.
+const STOP_LIMIT = Math.max(+(args.stop || 0) || 0, Math.round(finalRows * 0.15), 50);
 const stop = [];
 const buckets = new Map();
 for (const [tok, p] of postings) {
