@@ -167,7 +167,7 @@ for (const key of keys) {
 }
 
 // Надто поширені слова не мають пошукової цінності і роздувають індекс
-const STOP_LIMIT = Math.max(+(args.stop || 0) || 0, Math.round(finalRows * 0.02), 50);
+const STOP_LIMIT = Math.max(+(args.stop || 0) || 0, Math.round(finalRows * 0.05), 50);
 const stop = [];
 const buckets = new Map();
 for (const [tok, p] of postings) {
