@@ -33,6 +33,7 @@ const S = {
   rd: Object.assign({ ra: '', read: {} }, LS.get('ct.rd', {})),
   decMeta: LS.get('ct.decmeta', null),
   cfilter: 'live',
+  cards: LS.get('ct.cards', null),
   meta: LS.get('ct.meta', null),
   view: 'agenda',
   busy: false,
@@ -116,7 +117,8 @@ function itemTitle(it) {
   if (it.t === 'kw') return it.query;
   const rows = S.hearings[it.id] || [];
   const withInv = rows.filter((r) => r.involved);
-  return (withInv.length && shortParties(withInv[withInv.length - 1].involved)) || `Справа № ${it.number}`;
+  const cards = cardsOf(it).filter((c) => c.parts);
+  return (withInv.length && shortParties(withInv[withInv.length - 1].involved)) || (cards.length && shortParties(cards[0].parts)) || `Справа № ${it.number}`;
 }
 function addItem(data) {
   const now = Date.now();
@@ -158,27 +160,29 @@ const ghHeaders = () => ({
   Accept: 'application/vnd.github+json',
   'X-GitHub-Api-Version': '2022-11-28',
 });
-const ghUrl = () => `https://api.github.com/repos/${S.set.repo}/contents/watch.json`;
-async function ghGet() {
-  const r = await fetch(ghUrl() + `?t=${Date.now()}`, { headers: ghHeaders(), cache: 'no-store' });
-  if (r.status === 404) return { items: [], sha: null, ra: '', read: {} };
+const ghUrl = (name) => `https://api.github.com/repos/${S.set.repo}/contents/${name}`;
+async function ghGetJson(name) {
+  const r = await fetch(ghUrl(name) + `?t=${Date.now()}`, { headers: ghHeaders(), cache: 'no-store' });
+  if (r.status === 404) return { data: null, sha: null };
   if (r.status === 401 || r.status === 403) throw new Error('GitHub відхилив ключ доступу');
   if (!r.ok) throw new Error(`GitHub: помилка ${r.status}`);
   const j = await r.json();
-  let data = {};
+  let data = null;
   try {
     data = JSON.parse(b64ToUtf8(j.content || ''));
   } catch { /* порожній файл */ }
-  return { items: Array.isArray(data.items) ? data.items : [], sha: j.sha, ra: data.ra || '', read: data.read || {} };
+  return { data, sha: j.sha };
 }
-async function ghPut(items, rd, sha) {
-  const body = { message: 'Оновлення списку справ', content: utf8ToB64(JSON.stringify({ v: 1, items, ra: rd.ra, read: rd.read }, null, 1)) };
+async function ghPutJson(name, obj, sha, message) {
+  const body = { message, content: utf8ToB64(JSON.stringify(obj, null, 1)) };
   if (sha) body.sha = sha;
-  const r = await fetch(ghUrl(), { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
+  const r = await fetch(ghUrl(name), { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
   if (r.status === 409 || r.status === 422) return false;
   if (!r.ok) throw new Error(`GitHub: не вдалося зберегти (${r.status})`);
   return true;
 }
+// Список справ лежить у watch.json, позначки прочитання у state.json.
+// Запис у watch.json запускає в репозиторії завдання, яке оновлює cards.json (стан розгляду справ).
 let syncBusy = null;
 async function syncNow() {
   if (!syncOn()) {
@@ -189,14 +193,20 @@ async function syncNow() {
   syncBusy = (async () => {
     try {
       for (let i = 0; i < 3; i++) {
-        const remote = await ghGet();
-        const merged = mergeItems(S.items, remote.items);
-        const remoteRd = { ra: remote.ra, read: remote.read };
-        const rd = mergeRead(S.rd, remoteRd);
+        const w = await ghGetJson('watch.json');
+        const st = await ghGetJson('state.json');
+        const wd = w.data || {};
+        const remoteItems = Array.isArray(wd.items) ? wd.items : [];
+        const legacy = 'read' in wd || 'ra' in wd;
+        const remoteRd = { ra: (st.data && st.data.ra) || '', read: (st.data && st.data.read) || {} };
+        const merged = mergeItems(S.items, remoteItems);
+        const rd = mergeRead(mergeRead(S.rd, remoteRd), legacy ? { ra: wd.ra || '', read: wd.read || {} } : null);
         S.items = merged;
         S.rd = rd;
         save();
-        if ((sameItems(merged, remote.items) && sameItems(rd, remoteRd)) || (await ghPut(merged, rd, remote.sha))) break;
+        const ok1 = (sameItems(merged, remoteItems) && !legacy) || (await ghPutJson('watch.json', { v: 1, items: merged }, w.sha, 'Оновлення списку справ'));
+        const ok2 = sameItems(rd, remoteRd) || (await ghPutJson('state.json', { v: 1, ra: rd.ra, read: rd.read }, st.sha, 'Позначки прочитання'));
+        if (ok1 && ok2) break;
       }
       S.sync = 'ok:' + Date.now();
       return true;
@@ -208,6 +218,31 @@ async function syncNow() {
     }
   })();
   return syncBusy;
+}
+// ---------- Стан розгляду справ (cards.json у приватному репозиторії) ----------
+async function loadCards() {
+  if (!syncOn()) return;
+  try {
+    const r = await fetch(ghUrl('cards.json') + `?t=${Date.now()}`, { headers: { ...ghHeaders(), Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' });
+    if (r.status === 404) return;
+    if (!r.ok) return;
+    const j = await r.json();
+    if (j && j.cases) {
+      S.cards = { newest: j.newest, oldest: j.oldest, remaining: j.remaining, built: j.built, cases: j.cases };
+      LS.set('ct.cards', S.cards);
+    }
+  } catch { /* спробуємо під час наступного оновлення */ }
+}
+const cardsOf = (it) => (it && it.t === 'case' && S.cards && S.cards.cases && S.cards.cases[caseBase(it.number)]) || [];
+let cardsT = [];
+// Після додавання справи завдання GitHub готує дані близько хвилини
+function cardsSoon() {
+  if (!syncOn()) return;
+  cardsT.forEach(clearTimeout);
+  cardsT = [80, 160, 300].map((sec) => setTimeout(async () => {
+    await loadCards();
+    softRender();
+  }, sec * 1000));
 }
 let syncT;
 function syncSoon() {
@@ -254,6 +289,7 @@ async function refreshAll(opts = {}) {
   softRender();
   try {
     await syncNow();
+    loadCards().then(softRender);
     S.meta = await dc.meta(true);
     LS.set('ct.meta', { built: S.meta.built, sourceModified: S.meta.sourceModified, rows: S.meta.rows, to: S.meta.to });
     const list = live();
@@ -544,13 +580,15 @@ function viewAgenda() {
   if (!isNative) out += `<div class="btns"><button class="btn sec" data-act="ics-all">Додати всі засідання в Календар (.ics)</button></div><p class="note">Файл містить нагадування за добу і за годину.</p>`;
   return out;
 }
-const SORTS = [['next', 'за наступним засіданням'], ['title', 'за назвою'], ['number', 'за номером'], ['added', 'за датою додавання'], ['court', 'за судом'], ['dec', 'за останнім рішенням']];
+const SORTS = [['next', 'за наступним засіданням'], ['title', 'за назвою'], ['number', 'за номером'], ['added', 'за датою додавання'], ['court', 'за судом'], ['dec', 'за останнім рішенням'], ['stage', 'за датою стадії']];
 function sortCases(cases) {
   const now = kyivNowIso();
   const info = cases.map((it) => {
     const rows = S.hearings[it.id] || [];
     const decs = S.dec[caseBase(it.number)] || [];
-    return { it, next: rows.find((r) => r.iso >= now), court: rows.length ? rows[rows.length - 1].court : '', dec: decs.length ? decs[0].recv : '' };
+    const cards = cardsOf(it);
+    const st = cards.find((c) => c.stage) || cards[0];
+    return { it, next: rows.find((r) => r.iso >= now), court: rows.length ? rows[rows.length - 1].court : st ? st.court : '', dec: decs.length ? decs[0].recv : '', st };
   });
   const num = (n) => normCase(n).split(/[/-]/).map((x) => (/^\d+$/.test(x) ? x.padStart(7, '0') : x)).join('/');
   const by = {
@@ -560,6 +598,7 @@ function sortCases(cases) {
     added: (a, b) => (b.it.c || 0) - (a.it.c || 0),
     court: (a, b) => (a.court || 'я').localeCompare(b.court || 'я', 'uk') || itemTitle(a.it).localeCompare(itemTitle(b.it), 'uk'),
     dec: (a, b) => (b.dec || '').localeCompare(a.dec || ''),
+    stage: (a, b) => ((b.st && b.st.sd) || '').localeCompare((a.st && a.st.sd) || ''),
   };
   return info.sort(by[S.set.sort] || by.next);
 }
@@ -582,11 +621,12 @@ function viewCases() {
   }
   const unreadBy = new Map();
   for (const d of decList()) if (d.unread) unreadBy.set(d.base, (unreadBy.get(d.base) || 0) + 1);
-  for (const { it, next, court } of sortCases(cases)) {
+  for (const { it, next, court, st } of sortCases(cases)) {
     const nu = unreadBy.get(caseBase(it.number)) || 0;
     out += `<button class="card" data-act="open" data-id="${h(it.id)}"><div class="t">${h(itemTitle(it))}</div>
       <div class="m">№ ${h(it.number)}${court ? ` · ${h(court)}` : ''}</div>
       ${arch ? '' : `<div class="m">${next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>` : 'Призначених засідань немає'}</div>`}
+      ${st && st.stage ? `<div class="m">Стадія: <b>${h(st.stage)}</b>${st.sd ? ` (${h(fmtD(st.sd))})` : ''}</div>` : ''}
       ${it.note ? `<div class="m clamp">${h(it.note)}</div>` : ''}
       ${nu ? `<div style="margin-top:4px"><span class="tag new">нових рішень: ${nu}</span></div>` : ''}</button>`;
   }
@@ -764,6 +804,19 @@ function openItem(id) {
     const fut = rows.filter((r) => r.iso >= now);
     const past = rows.filter((r) => r.iso < now).reverse();
     const last = rows.filter((r) => r.involved).pop() || rows[rows.length - 1];
+    const cards = cardsOf(it);
+    const cardParts = (cards.filter((c) => c.parts).sort((x, y) => y.parts.length - x.parts.length)[0] || {}).parts || '';
+    const stan = cards.length
+      ? cards.map((c) => `<div class="card"><div class="t">${h(c.stage || 'Стадію не вказано')}${c.sd ? ` · ${h(fmtD(c.sd))}` : ''}</div>
+          <div class="m">${h(c.court)}${c.proc ? ` · провадження № ${h(c.proc)}` : ''}</div>
+          ${c.result ? `<div class="m">Результат: ${h(c.result)}</div>` : ''}
+          ${c.type ? `<div class="m">${h(c.type)}</div>` : ''}
+          <div class="m">${c.judge ? `${h(c.judge)} · ` : ''}${c.reg ? `зареєстровано ${h(fmtD(c.reg))}` : ''}</div>
+          ${c.desc ? `<div class="m clamp">${h(c.desc)}</div>` : ''}</div>`).join('')
+      : `<p class="note">${!syncOn() ? 'Стадія та учасники для справ без засідань доступні після налаштування синхронізації.'
+        : !S.cards ? 'Дані про стадію ще готуються. Вони зʼявляться приблизно за хвилину після додавання справи.'
+          : 'У базі стану розгляду цієї справи ще немає.'}</p>`;
+    const stanNote = S.cards && cards !== null ? `<p class="note">Дані ДСА про стан розгляду: файли від ${h(fmtD(S.cards.oldest))} до ${h(fmtD(S.cards.newest))}.${S.cards.remaining ? ' База ще наповнюється старішими даними.' : ''}</p>` : '';
     const baseline = it.rb || dateMinus(new Date(it.c || Date.now()).toISOString().slice(0, 10), 7);
     const decs = (S.dec[caseBase(it.number)] || []).map((d) => ({ ...d, unread: !it.arch && isUnread(d, baseline) }));
     body = `<div class="dh"><h1>${h(itemTitle(it))}</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
@@ -774,7 +827,9 @@ function openItem(id) {
       ${past.length ? `<h2>Історія засідань (${past.length})</h2>${past.map((r) => hearingCard({ ...r, item: null }, { date: true, title: dayLabel(r.iso.slice(0, 10)).main })).join('')}` : ''}
       <h2>Судові рішення${decs.length ? ` (${decs.length})` : ''}</h2>${decs.length ? decs.map((d) => decCard(d, { noTitle: true })).join('') : `<p class="note">У реєстрі немає рішень у цій справі${S.decMeta ? ` з ${h(fmtD(S.decMeta.from))}` : ''}.</p>`}
       <div class="btns"><a class="btn sec sm" href="https://court.gov.ua/fair/" target="_blank" rel="noopener" data-act="copy" data-text="${h(it.number)}">Стан розгляду на court.gov.ua (номер буде скопійовано)</a></div>
-      ${last ? `<h2>Учасники</h2><div class="card m">${h(last.involved)}</div><h2>Склад суду</h2><div class="card m">${h(last.judges)}</div>` : ''}
+      <h2>Стан розгляду</h2>${stan}${stanNote}
+      ${(last && last.involved) || cardParts ? `<h2>Учасники</h2><div class="card m">${h((last && last.involved) || cardParts)}</div>` : ''}
+      ${last && last.judges ? `<h2>Склад суду</h2><div class="card m">${h(last.judges)}</div>` : ''}
       <div class="btns">${!isNative && fut.length ? `<button class="btn sec" data-act="ics-item" data-id="${h(it.id)}">У Календар (.ics)</button>` : ''}<button class="btn sec" data-act="arch" data-id="${h(it.id)}">${it.arch ? 'Повернути з архіву' : 'В архів'}</button><button class="btn danger" data-act="del" data-id="${h(it.id)}">Видалити зі списку</button></div>
       <button class="btn wide" data-act="close">Закрити</button>`;
   } else {
@@ -842,6 +897,7 @@ async function importAdd() {
   S.view = 'cases';
   closeDlg();
   toast(`Додано справ: ${items.length}. Завантажую засідання…`);
+  cardsSoon();
   await refreshAll({ force: true });
 }
 
@@ -874,6 +930,7 @@ async function runSearch() {
 async function watchCase(number) {
   const it = addItem({ t: 'case', number: number.trim() });
   toast(`Справу № ${it.number} додано до списку`);
+  cardsSoon();
   try {
     await refreshItem(it);
     save();
