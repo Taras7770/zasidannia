@@ -63,7 +63,15 @@ if (url) {
       let t = buf.toString('utf8');
       if (t.includes('\uFFFD')) t = new TextDecoder('windows-1251').decode(buf);
       try {
-        console.log(JSON.stringify(JSON.parse(t), null, 1).slice(0, 9000));
+        const obj = JSON.parse(t);
+        for (const [k, v] of Object.entries(obj)) {
+          const sv = typeof v === 'string' ? v : JSON.stringify(v);
+          if (sv.length < 400) console.log(`  ${k}: ${sv}`);
+          else {
+            const parts = Array.isArray(v) ? v.map((x) => JSON.stringify(x)) : sv.split(',');
+            console.log(`  ${k}: [${parts.length} частин] перші: ${parts.slice(0, 3).join(' ; ').slice(0, 700)} ... останні: ${parts.slice(-4).join(' ; ').slice(0, 900)}`);
+          }
+        }
       } catch (e) {
         console.log('не JSON', e.message);
       }
