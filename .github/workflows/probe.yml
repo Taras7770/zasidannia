@@ -12,6 +12,9 @@ on:
       ids:
         description: Ідентифікатори наборів (кілька через |)
         required: false
+      stage:
+        description: Аналіз набору «стан розгляду справ», кількість днів
+        required: false
 
 permissions:
   contents: read
@@ -30,4 +33,6 @@ jobs:
           U: ${{ inputs.url }}
           I: ${{ inputs.ids }}
           DUMP: '1'
-        run: node scripts/probe.mjs "$Q" "$U" "$I"
+          S: ${{ inputs.stage }}
+        run: |
+          if [ -n "$S" ]; then node --max-old-space-size=6000 scripts/probe-stage.mjs "$S"; else node scripts/probe.mjs "$Q" "$U" "$I"; fi
