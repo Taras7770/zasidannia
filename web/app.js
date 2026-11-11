@@ -303,7 +303,7 @@ function trackedCases() {
     const baseline = it.rb || dateMinus(new Date(it.c || Date.now()).toISOString().slice(0, 10), 7);
     for (const r of S.hearings[it.id] || []) {
       const b = caseBase(r.case);
-      if (!map.has(b) && map.size < 90) map.set(b, { item: it, row: r, baseline });
+      if (!map.has(b) && map.size < 70) map.set(b, { item: it, row: r, baseline });
     }
   }
   return map;
@@ -313,7 +313,8 @@ async function refreshDecisions() {
   S.decMeta = meta ? { built: meta.built, from: meta.from, sourceModified: meta.sourceModified } : null;
   LS.set('ct.decmeta', S.decMeta);
   if (!meta) return;
-  const bases = [...trackedCases().keys()];
+  const tracked = trackedCases();
+  const bases = [...tracked.keys()];
   const next = {};
   const queue = bases.slice();
   await Promise.all(Array.from({ length: Math.min(6, queue.length) }, async () => {
@@ -321,7 +322,7 @@ async function refreshDecisions() {
       const b = queue.shift();
       try {
         const rows = await dc.decisions(b);
-        next[b] = (rows || []).slice(0, 40);
+        next[b] = (rows || []).slice(0, tracked.get(b).item.t === 'case' ? 60 : 15);
       } catch {
         if (S.dec[b]) next[b] = S.dec[b];
       }
@@ -366,11 +367,12 @@ function decCard(d, opts = {}) {
 function viewDecisions() {
   const list = decList();
   const unread = list.filter((d) => d.unread);
-  const rest = list.filter((d) => !d.unread);
+  const since = dateMinus(kyivToday(), 90);
+  const rest = list.filter((d) => !d.unread && d.recv >= since);
   let out = `<div class="head"><h1>Рішення</h1><button class="btn sec sm" data-act="dec-all" ${unread.length ? '' : 'disabled'}>Усі прочитані</button></div>`;
   if (!S.decMeta) return out + `<div class="empty"><b>Даних про рішення ще немає</b>Застосунок завантажить їх під час наступного оновлення.</div>`;
-  out += `<p class="sub">Рішення, які надійшли до реєстру з ${h(fmtD(S.decMeta.from))}. ДСА публікує ці дані із затримкою 1-3 дні.</p>`;
-  if (!list.length) return out + `<div class="empty"><b>Рішень немає</b>У ваших справах немає рішень за цей період.</div>`;
+  out += `<p class="sub">Нові рішення та прочитані за останні 90 днів. Усі рішення з ${h(fmtD(S.decMeta.from))} є у вікні справи. ДСА публікує ці дані із затримкою 1-3 дні.</p>`;
+  if (!unread.length && !rest.length) return out + `<div class="empty"><b>Нових рішень немає</b>Старіші рішення відкрийте у вікні справи.</div>`;
   if (unread.length) out += `<h2>Нові (${unread.length})</h2>` + unread.map((d) => decCard(d)).join('');
   if (rest.length) out += `<h2>Прочитані</h2>` + rest.slice(0, 150).map((d) => decCard(d)).join('');
   return out;
@@ -770,7 +772,8 @@ function openItem(id) {
       <label>Нотатка</label><textarea rows="2" data-item="${h(it.id)}" data-field="note">${h(it.note || '')}</textarea>
       <h2>Майбутні засідання</h2>${fut.length ? fut.map((r) => hearingCard({ ...r, item: null }, { date: true, title: dayLabel(r.iso.slice(0, 10)).main })).join('') : '<p class="note">Призначених засідань немає.</p>'}
       ${past.length ? `<h2>Історія засідань (${past.length})</h2>${past.map((r) => hearingCard({ ...r, item: null }, { date: true, title: dayLabel(r.iso.slice(0, 10)).main })).join('')}` : ''}
-      ${decs.length ? `<h2>Судові рішення</h2>${decs.map((d) => decCard(d, { noTitle: true })).join('')}` : ''}
+      <h2>Судові рішення${decs.length ? ` (${decs.length})` : ''}</h2>${decs.length ? decs.map((d) => decCard(d, { noTitle: true })).join('') : `<p class="note">У реєстрі немає рішень у цій справі${S.decMeta ? ` з ${h(fmtD(S.decMeta.from))}` : ''}.</p>`}
+      <div class="btns"><a class="btn sec sm" href="https://court.gov.ua/fair/" target="_blank" rel="noopener" data-act="copy" data-text="${h(it.number)}">Стан розгляду на court.gov.ua (номер буде скопійовано)</a></div>
       ${last ? `<h2>Учасники</h2><div class="card m">${h(last.involved)}</div><h2>Склад суду</h2><div class="card m">${h(last.judges)}</div>` : ''}
       <div class="btns">${!isNative && fut.length ? `<button class="btn sec" data-act="ics-item" data-id="${h(it.id)}">У Календар (.ics)</button>` : ''}<button class="btn sec" data-act="arch" data-id="${h(it.id)}">${it.arch ? 'Повернути з архіву' : 'В архів'}</button><button class="btn danger" data-act="del" data-id="${h(it.id)}">Видалити зі списку</button></div>
       <button class="btn wide" data-act="close">Закрити</button>`;

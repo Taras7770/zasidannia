@@ -32,7 +32,7 @@ jobs:
       - name: Перевірка коду
         run: |
           node scripts/build-data.mjs --src=test/sample.csv --out=/tmp/zdata --today=2026-11-11 --min=1 --stop=1000 --past=14
-          node scripts/build-decisions.mjs --zip=test/edrsr_sample.zip --out=/tmp/zdata --today=2026-11-11 --min=1
+          node scripts/build-decisions.mjs --zip=test/edrsr_sample.zip --out=/tmp/zdata --today=2026-11-11 --min=1 --days=90 --files=7
           node test/run.mjs /tmp/zdata
       - name: Побудова даних з data.gov.ua
         id: data

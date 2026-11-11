@@ -170,10 +170,8 @@ export class DataClient {
     const dec = await this.decMeta();
     if (!dec) return null;
     const base = caseBase(caseNo);
-    const key = shardKey(base);
-    const B = dec.b[key];
-    if (!B) return [];
-    const name = `d/${key}_${hash32(base) % B}.json.gz?v=${encodeURIComponent(dec.built)}`;
+    if (!dec.n) return [];
+    const name = `d/${hash32(base) % dec.n}.json.gz?v=${encodeURIComponent(dec.built)}`;
     let p = this._decFiles.get(name);
     if (!p) {
       p = (async () => {
