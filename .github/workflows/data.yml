@@ -1,0 +1,67 @@
+name: Дані та сайт
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '40 22 * * *'
+    - cron: '10 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  actions: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      changed: ${{ steps.data.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Перевірка коду
+        run: |
+          node scripts/build-data.mjs --src=test/sample.csv --out=/tmp/zdata --today=2026-11-11 --min=1 --stop=1000
+          node test/run.mjs /tmp/zdata
+      - name: Побудова даних з data.gov.ua
+        id: data
+        run: |
+          EXTRA=""
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            OWNER="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+            EXTRA="--if-changed=https://${OWNER}.github.io/${{ github.event.repository.name }}/data/meta.json"
+          fi
+          node --max-old-space-size=6000 scripts/build-data.mjs --out=web/data $EXTRA
+          du -sh web/data 2>/dev/null || true
+      - name: Залишити розклад увімкненим
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/data.yml/enable" || true
+      - uses: actions/configure-pages@v5
+        if: steps.data.outputs.changed != 'false'
+      - uses: actions/upload-pages-artifact@v4
+        if: steps.data.outputs.changed != 'false'
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.changed != 'false'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

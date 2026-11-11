@@ -1,0 +1,15 @@
+{
+  "appId": "ua.zasidannia.app",
+  "appName": "Мої засідання",
+  "webDir": "www",
+  "server": {
+    "url": "https://taras7770.github.io/zasidannia/",
+    "androidScheme": "https",
+    "errorPath": "error.html",
+    "allowNavigation": ["taras7770.github.io"]
+  },
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#17365d"
+  }
+}
