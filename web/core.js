@@ -168,7 +168,7 @@ export class DataClient {
   // Пошук за учасником або представником
   async findName(query, opts = {}) {
     const meta = await this.meta();
-    const maxShards = opts.maxShards || 60;
+    const maxShards = opts.maxShards || 25;
     const qAll = [...new Set(tokenize(query))];
     const usable = qAll.filter((t) => !this._stop.has(t)).sort((a, b) => b.length - a.length);
     if (!qAll.length) return { rows: [], error: 'short' };
@@ -208,6 +208,9 @@ export class DataClient {
       keys = keys.filter((k) => normText((meta.shards[k] || [0, ''])[1]).includes(cf));
     }
     keys.sort((a, b) => cand.get(b).size - cand.get(a).size);
+    const totalShards = keys.length;
+    let totalRows = 0;
+    for (const k of keys) totalRows += cand.get(k).size;
     const truncated = keys.length > maxShards;
     if (truncated) keys = keys.slice(0, maxShards);
     const rows = [];
@@ -229,7 +232,7 @@ export class DataClient {
       }),
     );
     rows.sort((a, b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0));
-    return { rows, truncated, shards: keys.length };
+    return { rows, truncated, shards: keys.length, totalShards, totalRows };
   }
 }
 

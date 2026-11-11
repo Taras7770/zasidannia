@@ -205,7 +205,7 @@ function syncSoon() {
 async function refreshItem(it) {
   let rows;
   if (it.t === 'case') rows = (await dc.findCase(it.number)).rows;
-  else rows = (await dc.findName(it.query, { court: it.court, maxShards: 80 })).rows.slice(-400);
+  else rows = (await dc.findName(it.query, { court: it.court, maxShards: 40 })).rows.slice(-400);
   S.hearings[it.id] = rows;
   const now = kyivNowIso();
   const first = !S.init.has(it.id);
@@ -481,7 +481,7 @@ function viewSearch() {
   if (!isCase) {
     const fut = res.rows.filter((r) => r.iso >= now).length;
     out += `<div class="card"><div class="t">Знайдено справ: ${groups.length}, майбутніх засідань: ${fut}</div>
-      ${res.truncated ? '<div class="m warn">Збігів дуже багато. Показано частину. Додайте імʼя або суд.</div>' : ''}
+      ${res.truncated ? `<div class="m warn">Збігів дуже багато: близько ${res.totalRows} у ${res.totalShards} судах. Показано частину. Додайте імʼя або вкажіть суд.</div>` : ''}
       <div class="btns"><button class="btn sec" data-act="watch-kw">Стежити за цим запитом</button></div>
       <div class="m">Нові засідання за запитом зʼявлятимуться автоматично.</div></div>`;
   }
