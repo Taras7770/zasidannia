@@ -39,7 +39,18 @@ if (url) {
         console.log(execSync(`unzip -p /tmp/probe.zip "${name}" | wc -l`).toString());
       }
     } else if (/html/.test(r.headers.get('content-type') || '')) {
-      const html = buf.toString('utf8');
+      const cs = /1251/.test(r.headers.get('content-type') || '') ? 'windows-1251' : 'utf-8';
+      const html = new TextDecoder(cs).decode(buf);
+      if (process.env.DUMP) {
+        const body = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/g, ' ');
+        for (const m of body.matchAll(/href=["']([^"']+)["'][^>]*>([\s\S]{0,300}?)<\/a>/g)) {
+          const text = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          if (/\d{3}|json|csv|zip/.test(m[1]) && text) console.log(`  ${m[1]} | ${text.slice(0, 200)}`);
+        }
+        const txt = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+        const i = txt.search(/розгляду|реєстр/i);
+        console.log('ТЕКСТ:', txt.slice(Math.max(0, i - 500), i + 5000));
+      }
       const seen = new Set();
       for (const m of html.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)) {
         const text = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();

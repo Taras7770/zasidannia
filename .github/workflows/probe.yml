@@ -29,4 +29,5 @@ jobs:
           Q: ${{ inputs.q }}
           U: ${{ inputs.url }}
           I: ${{ inputs.ids }}
+          DUMP: '1'
         run: node scripts/probe.mjs "$Q" "$U" "$I"
