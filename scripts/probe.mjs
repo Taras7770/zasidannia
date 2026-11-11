@@ -38,6 +38,16 @@ if (url) {
         console.log(execSync(`unzip -p /tmp/probe.zip "${name}" | head -c 2500`, { maxBuffer: 1e7 }).toString());
         console.log(execSync(`unzip -p /tmp/probe.zip "${name}" | wc -l`).toString());
       }
+    } else if (/html/.test(r.headers.get('content-type') || '')) {
+      const html = buf.toString('utf8');
+      const seen = new Set();
+      for (const m of html.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)) {
+        const text = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        if (!/oddata|open_data|\.zip|\.csv|\.json|data\.gov/i.test(m[1]) || seen.has(m[1])) continue;
+        seen.add(m[1]);
+        console.log(`  ${m[1]} | ${text.slice(0, 160)}`);
+      }
+      console.log('посилань:', seen.size, 'довжина сторінки:', html.length);
     } else {
       console.log(buf.subarray(0, 3000).toString('utf8'));
     }
