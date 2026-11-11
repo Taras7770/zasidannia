@@ -5,6 +5,7 @@
   "description": "Android-оболонка застосунку «Мої засідання» (Capacitor)",
   "dependencies": {
     "@capacitor/android": "8.6.0",
+    "@capacitor/app": "8.1.2",
     "@capacitor/core": "8.6.0",
     "@capacitor/local-notifications": "8.3.1"
   },

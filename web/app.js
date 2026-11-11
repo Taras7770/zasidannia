@@ -1003,6 +1003,17 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('online', autoRefresh);
 
+// Android: жест або кнопка «назад» закриває вікно справи, потім повертає до засідань, потім згортає застосунок
+if (isNative && cap.addListener) {
+  try {
+    cap.addListener('App', 'backButton', () => {
+      if ($('#dlg').open) closeDlg();
+      else if (S.view !== 'agenda') go('agenda');
+      else cap.nativePromise('App', 'minimizeApp').catch(() => {});
+    });
+  } catch { /* стара версія APK без модуля App */ }
+}
+
 render();
 autoRefresh();
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
