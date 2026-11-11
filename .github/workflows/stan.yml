@@ -1,0 +1,58 @@
+name: Стан розгляду справ
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_files:
+        description: Скільки щоденних файлів обробити за запуск
+        default: '90'
+      chain:
+        description: Запускати наступну частину автоматично (true або false)
+        default: 'true'
+  schedule:
+    - cron: '20 5 * * *'
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: stan
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Звільнити місце на диску
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
+          df -h / | tail -1
+      - name: Завантажити наявну базу
+        run: |
+          mkdir -p /tmp/stan/base
+          gh release view stan >/dev/null 2>&1 || gh release create stan --title "Стан розгляду справ: дані" --notes "Службові дані застосунку «Мої засідання». Джерело: ДСА України, набір «Інформація щодо стану розгляду справ» (dsa.court.gov.ua)."
+          gh release download stan -D /tmp/stan/base -p 'base-*.tsv.gz' -p 'manifest.json' --clobber || true
+          echo "файлів бази: $(ls /tmp/stan/base | wc -l), розмір: $(du -sh /tmp/stan/base | cut -f1)"
+      - name: Обробити щоденні файли
+        id: run
+        run: node --max-old-space-size=8000 scripts/build-stan.mjs --work=/tmp/stan --max-files=${{ inputs.max_files || '90' }} --max-min=100
+      - name: Зберегти базу
+        run: |
+          cd /tmp/stan/out
+          ls base-*.tsv.gz 2>/dev/null | xargs -r -n 30 gh release upload stan --clobber
+          gh release upload stan manifest.json --clobber
+          du -sh /tmp/stan/out | cut -f1
+      - name: Запустити наступну частину
+        if: steps.run.outputs.remaining != '0' && steps.run.outputs.done != '0' && inputs.chain != 'false'
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/actions/workflows/stan.yml/dispatches" -f ref=main -f "inputs[max_files]=${{ inputs.max_files || '90' }}" -f "inputs[chain]=true"
