@@ -1,0 +1,28 @@
+name: Перевірка наборів даних
+
+on:
+  workflow_dispatch:
+    inputs:
+      q:
+        description: Запит до каталогу (кілька через |)
+        required: false
+      url:
+        description: Адреса файлу (кілька через |)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - env:
+          Q: ${{ inputs.q }}
+          U: ${{ inputs.url }}
+        run: node scripts/probe.mjs "$Q" "$U"
