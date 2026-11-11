@@ -27,7 +27,7 @@ const OUT = join(WORK, 'out');
 const TMP = join(WORK, 'tmp');
 const MAX_FILES = +(args['max-files'] || 100);
 const MAX_MIN = +(args['max-min'] || 110);
-const MAX_ROWS = +(args['max-rows'] || 40e6);
+const MAX_ROWS = +(args['max-rows'] || 120e6);
 const SHARDS_DEFAULT = +(args.shards || 512);
 const started = Date.now();
 const setOutput = (k, v) => process.env.GITHUB_OUTPUT && appendFileSync(process.env.GITHUB_OUTPUT, `${k}=${v}\n`);

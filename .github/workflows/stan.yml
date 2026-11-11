@@ -5,7 +5,7 @@ on:
     inputs:
       max_files:
         description: Скільки щоденних файлів обробити за запуск
-        default: '90'
+        default: '150'
       chain:
         description: Запускати наступну частину автоматично (true або false)
         default: 'true'
@@ -45,7 +45,7 @@ jobs:
           echo "файлів бази: $(ls /tmp/stan/base | wc -l), розмір: $(du -sh /tmp/stan/base | cut -f1)"
       - name: Обробити щоденні файли
         id: run
-        run: node --max-old-space-size=8000 scripts/build-stan.mjs --work=/tmp/stan --max-files=${{ inputs.max_files || '90' }} --max-min=100
+        run: node --max-old-space-size=8000 scripts/build-stan.mjs --work=/tmp/stan --max-files=${{ inputs.max_files || '150' }} --max-min=150
       - name: Зберегти базу
         run: |
           cd /tmp/stan/out
@@ -55,4 +55,4 @@ jobs:
       - name: Запустити наступну частину
         if: steps.run.outputs.remaining != '0' && steps.run.outputs.done != '0' && inputs.chain != 'false'
         run: |
-          gh api -X POST "repos/${{ github.repository }}/actions/workflows/stan.yml/dispatches" -f ref=main -f "inputs[max_files]=${{ inputs.max_files || '90' }}" -f "inputs[chain]=true"
+          gh api -X POST "repos/${{ github.repository }}/actions/workflows/stan.yml/dispatches" -f ref=main -f "inputs[max_files]=${{ inputs.max_files || '150' }}" -f "inputs[chain]=true"
