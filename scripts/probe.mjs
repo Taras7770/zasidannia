@@ -59,6 +59,12 @@ if (url) {
         console.log(`  ${m[1]} | ${text.slice(0, 160)}`);
       }
       console.log('посилань:', seen.size, 'довжина сторінки:', html.length);
+    } else if (/open_data_json/.test(u)) {
+      let t = buf.toString('utf8');
+      if (t.includes('\uFFFD')) t = new TextDecoder('windows-1251').decode(buf);
+      const title = (/"(?:title|name|nazva)[^"]*"\s*:\s*"([^"]{3,200})"/i.exec(t) || [])[1];
+      const links = [...new Set(t.match(/https?:[^"\s]+?\.(?:zip|csv|json|xml)/gi) || [])].map((x) => x.replace(/\\\//g, '/'));
+      console.log(`  JSON ${u.split('=').pop()} | ${title} | ${links.slice(-3).join(' , ')} | ${t.slice(0, 260).replace(/\s+/g, ' ')}`);
     } else {
       console.log(buf.subarray(0, 3000).toString('utf8'));
     }
