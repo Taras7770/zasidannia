@@ -43,6 +43,9 @@ jobs:
           fi
           node --max-old-space-size=6000 scripts/build-data.mjs --out=web/data $EXTRA
           du -sh web/data 2>/dev/null || true
+      - name: Самоперевірка пошуку на реальних даних
+        if: steps.data.outputs.changed != 'false'
+        run: node scripts/selfcheck.mjs web/data 200
       - name: Залишити розклад увімкненим
         if: github.event_name == 'schedule'
         env:
