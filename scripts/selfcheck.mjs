@@ -60,10 +60,12 @@ if (dm) {
   const dfiles = readdirSync(`${dir}/d`);
   for (let i = 0; i < 60 && dfiles.length; i++) {
     const f = JSON.parse(gunzipSync(readFileSync(`${dir}/d/${dfiles[rnd(dfiles.length)]}`)).toString());
-    const r = f.rows[rnd(f.rows.length)];
+    const causes = Object.keys(f.c);
+    const cause = causes[rnd(causes.length)];
+    const id = f.c[cause][0][0];
     decTried++;
-    const got = await dc.decisions(r[1]);
-    if (got && got.some((x) => x.id === r[0])) decOk++;
+    const got = await dc.decisions(cause);
+    if (got && got.some((x) => x.id === id && x.court && /^\d{4}-/.test(x.adj))) decOk++;
   }
   console.log(`Рішення: ${decOk}/${decTried} знайдено за номером справи. Усього рішень: ${dm.rows}, з ${dm.from}.`);
 } else console.log('Даних про рішення немає.');

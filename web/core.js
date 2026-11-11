@@ -182,16 +182,19 @@ export class DataClient {
       p.catch(() => this._decFiles.delete(name));
     }
     const f = await p;
-    if (!f) return [];
+    if (!f || !f.c) return [];
+    const day = (n) => new Date(Date.UTC(2000, 0, 1) + n * 864e5).toISOString().slice(0, 10);
     const out = [];
-    for (const r of f.rows) {
-      if (caseBase(r[1]) !== base) continue;
-      out.push({
-        id: r[0], case: r[1], adj: r[2], recv: r[3], form: dec.forms[r[4]] || 'Документ',
-        kind: dec.kinds[r[5]] || '', court: f.courts[r[6]] || '', judge: f.judges[r[7]] || '', pub: r[8] !== 0,
-      });
+    for (const [cause, rows] of Object.entries(f.c)) {
+      if (caseBase(cause) !== base) continue;
+      for (const r of rows) {
+        out.push({
+          id: r[0], case: cause, adj: day(r[1]), recv: day(r[2]), form: dec.forms[r[3]] || 'Документ',
+          kind: dec.kinds[r[4]] || '', court: dec.courts[r[5]] || '', judge: '', pub: r[6] !== 0,
+        });
+      }
     }
-    return out;
+    return out.sort((a, b) => (a.recv < b.recv ? 1 : a.recv > b.recv ? -1 : b.id - a.id));
   }
   // Пошук за номером справи (повний номер або його початок з кодом суду)
   async findCase(q) {

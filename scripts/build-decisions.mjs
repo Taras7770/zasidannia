@@ -12,7 +12,9 @@ import { join } from 'node:path';
 import { TsvParser } from './tsv.mjs';
 import { shardKey, caseBase, hash32, kyivToday } from '../web/core.js';
 
-const VERSION = 2;
+const VERSION = 3;
+const DAY0 = Date.UTC(2000, 0, 1);
+const days = (d) => Math.round((Date.parse(d + 'T00:00:00Z') - DAY0) / 864e5) || 0;
 const UA = { 'User-Agent': 'zasidannia-open-data-reader/1.0 (personal court calendar)' };
 const KNOWN = { 2026: '16ab7f06-7414-405f-8354-0a492475272d', 2025: '2a95ae17-ed46-42ae-ad66-dd9b7a727bb7' };
 const args = Object.fromEntries(process.argv.slice(2).map((a) => {
@@ -126,7 +128,7 @@ for (const zip of zips) {
     if (!cause || !/^\d+$/.test(f[0])) return;
     const bucket = hash32(caseBase(cause)) % NFILES;
     const part = bucket % PARTS;
-    const line = `${bucket}\t${f[0]}\t${cause}\t${f[6].slice(0, 10)}\t${recv}\t${+f[2] || 0}\t${+f[3] || 0}\t${f[1]}\t${f[8].trim().replace(/[\t\n]/g, ' ')}\t${f[10] === '0' ? 0 : 1}\n`;
+    const line = `${bucket}\t${f[0]}\t${cause}\t${f[6].slice(0, 10)}\t${recv}\t${+f[2] || 0}\t${+f[3] || 0}\t${f[1]}\t${f[10] === '0' ? 0 : 1}\n`;
     bufs[part].push(line);
     sizes[part] += line.length;
     if (sizes[part] > 1 << 20) flush(part);
@@ -140,6 +142,8 @@ if (kept < (args.min ? +args.min : 1000)) {
   process.exit(1);
 }
 
+const courtList = [...courts.entries()];
+const courtIdx = new Map(courtList.map(([code], i) => [code, i]));
 // Етап 2: кожен тимчасовий файл ділимо на файли результату
 rmSync(join(OUT, 'd'), { recursive: true, force: true });
 mkdirSync(join(OUT, 'd'), { recursive: true });
@@ -160,28 +164,28 @@ for (let i = 0; i < PARTS; i++) {
   rmSync(file);
   for (const [bucket, part] of groups) {
     part.sort((x, y) => (x[4] < y[4] ? 1 : x[4] > y[4] ? -1 : y[1] - x[1]));
-    const cm = new Map();
-    const jm = new Map();
-    const out = [];
+    // Стислий формат: рішення згруповані за номером справи, дати записані числом днів
+    const byCase = {};
     let prev = '';
+    let n = 0;
     for (const r of part) {
       if (r[1] === prev) continue;
       prev = r[1];
-      const cn = courts.get(r[7]) || '';
-      if (!cm.has(cn)) cm.set(cn, cm.size);
-      if (!jm.has(r[8])) jm.set(r[8], jm.size);
-      out.push([+r[1], r[2], r[3], r[4], +r[5], +r[6], cm.get(cn), jm.get(r[8]), +r[9]]);
+      let ci = courtIdx.get(r[7]);
+      if (ci === undefined) ci = -1;
+      (byCase[r[2]] || (byCase[r[2]] = [])).push([+r[1], days(r[3]), days(r[4]), +r[5], +r[6], ci, +r[8]]);
+      n++;
     }
-    const gz = gzipSync(JSON.stringify({ courts: [...cm.keys()], judges: [...jm.keys()], rows: out }), { level: 6 });
+    const gz = gzipSync(JSON.stringify({ c: byCase }), { level: 9 });
     writeFileSync(join(OUT, 'd', `${bucket}.json.gz`), gz);
     files++;
     bytes += gz.length;
-    rowsOut += out.length;
+    rowsOut += n;
   }
 }
 kept = rowsOut;
 writeFileSync(join(OUT, 'dec.json'), JSON.stringify({
-  v: VERSION, built: new Date().toISOString(), sourceModified, from: cutoff, rows: kept, bad, forms, kinds, n: NFILES,
+  v: VERSION, built: new Date().toISOString(), sourceModified, from: cutoff, rows: kept, bad, forms, kinds, n: NFILES, day0: '2000-01-01', courts: courtList.map((c) => c[1]),
   source: 'ДСА України, набір «Єдиний державний реєстр судових рішень», data.gov.ua',
 }));
 console.log(`Рішень: ${kept} з ${cutoff}, файлів: ${files} (${(bytes / 1e6).toFixed(1)} МБ)`);
