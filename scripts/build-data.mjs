@@ -21,7 +21,8 @@ const args = Object.fromEntries(
   }),
 );
 const OUT = args.out || 'web/data';
-const PAST_DAYS = +(args.past || 14);
+// Минулі засідання залишаються в даних: застосунок показує історію справи
+const PAST_DAYS = +(args.past || 400);
 const today = args.today || kyivToday();
 const cutoff = (() => {
   const d = new Date(today + 'T00:00:00Z');

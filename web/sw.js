@@ -1,5 +1,5 @@
 // Кеш оболонки застосунку: застосунок відкривається без мережі зі збереженими даними.
-const CACHE = 'zas-shell-v1';
+const CACHE = 'zas-shell-v2';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'core.js', 'manifest.webmanifest', 'icons/icon-192.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

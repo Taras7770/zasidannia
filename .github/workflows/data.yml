@@ -5,7 +5,7 @@ on:
     branches: [main]
   schedule:
     - cron: '40 22 * * *'
-    - cron: '10 4 * * *'
+    - cron: '40 7 * * *'
   workflow_dispatch:
 
 permissions:
@@ -31,18 +31,19 @@ jobs:
           node-version: 22
       - name: Перевірка коду
         run: |
-          node scripts/build-data.mjs --src=test/sample.csv --out=/tmp/zdata --today=2026-11-11 --min=1 --stop=1000
+          node scripts/build-data.mjs --src=test/sample.csv --out=/tmp/zdata --today=2026-11-11 --min=1 --stop=1000 --past=14
+          node scripts/build-decisions.mjs --zip=test/edrsr_sample.zip --out=/tmp/zdata --today=2026-11-11 --min=1
           node test/run.mjs /tmp/zdata
       - name: Побудова даних з data.gov.ua
         id: data
         run: |
-          EXTRA=""
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            OWNER="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-            EXTRA="--if-changed=https://${OWNER}.github.io/${{ github.event.repository.name }}/data/meta.json"
-          fi
-          node --max-old-space-size=6000 scripts/build-data.mjs --out=web/data $EXTRA
+          node --max-old-space-size=6000 scripts/build-data.mjs --out=web/data
           du -sh web/data 2>/dev/null || true
+      - name: Побудова даних про судові рішення (ЄДРСР)
+        continue-on-error: true
+        run: |
+          node --max-old-space-size=6000 scripts/build-decisions.mjs --out=web/data
+          du -sh web/data/d 2>/dev/null || true
       - name: Самоперевірка пошуку на реальних даних
         if: steps.data.outputs.changed != 'false'
         run: node scripts/selfcheck.mjs web/data 200

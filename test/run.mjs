@@ -48,4 +48,17 @@ assert.deepEqual(extractCaseNumbers('Справа № 127/33448/26, а тако�
   assert.deepEqual(extractCaseNumbers(t).sort(), ['127/33448/26', '129/56/25', '902/44/26']);
 }
 assert.deepEqual(extractCaseNumbers(await fileToText(new TextEncoder().encode('a;127/1/26\nb;128/2/26').buffer)), ['127/1/26', '128/2/26']);
+// 6. судові рішення
+{
+  const { caseBase, mergeRead, reviewUrl } = await import('../web/core.js');
+  assert.equal(caseBase('127/33448/26-ц (2/127/5/26)'), '127/33448/26'); assert.equal(caseBase('2-1234/09'), '2-1234/09');
+  const dm = await dc.decMeta(); assert.equal(dm.rows, 6); assert.equal(dm.forms[5], 'Ухвала');
+  const d = await dc.decisions('127/33448/26'); assert.deepEqual(d.map((x) => x.id), [140000002, 140000001, 139000003]);
+  assert.equal(d[0].form, 'Постанова'); assert.equal(d[0].court, 'Вінницький міський суд Вінницької області'); assert.equal(d[2].pub, false);
+  assert.equal((await dc.decisions('902/44/26')).length, 1); assert.equal((await dc.decisions('999/1/26')).length, 0);
+  assert.equal(reviewUrl(5), 'https://reyestr.court.gov.ua/Review/5');
+  const today = new Date().toISOString().slice(0, 10);
+  const mr = mergeRead({ ra: '2026-11-01', read: { 1: today, 2: '2026-10-01' } }, { ra: '2026-10-15', read: { 3: today } });
+  assert.equal(mr.ra, '2026-11-01'); assert.deepEqual(Object.keys(mr.read), ['1', '3']);
+}
 console.log('OK');

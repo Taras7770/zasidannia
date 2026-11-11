@@ -1,6 +1,7 @@
 import {
   DataClient, normCase, normText, tokenize, kyivDate, kyivToday, kyivNowIso, hearingUid, hash32,
   mergeItems, sameItems, utf8ToB64, b64ToUtf8, buildIcs, extractCaseNumbers, fileToText,
+  caseBase, mergeRead, reviewUrl,
 } from './core.js';
 
 // ---------- Сховище ----------
@@ -27,7 +28,11 @@ const S = {
   seen: new Set(LS.get('ct.seen', [])),
   fresh: new Set(LS.get('ct.new', [])),
   init: new Set(LS.get('ct.init', [])),
-  set: Object.assign({ repo: '', token: '', r1d: true, r1h: true }, LS.get('ct.set', {})),
+  set: Object.assign({ repo: '', token: '', r1d: true, r1h: true, sort: 'next' }, LS.get('ct.set', {})),
+  dec: LS.get('ct.dec', {}),
+  rd: Object.assign({ ra: '', read: {} }, LS.get('ct.rd', {})),
+  decMeta: LS.get('ct.decmeta', null),
+  cfilter: 'live',
   meta: LS.get('ct.meta', null),
   view: 'agenda',
   busy: false,
@@ -43,8 +48,12 @@ const save = () => {
   LS.set('ct.new', [...S.fresh]);
   LS.set('ct.init', [...S.init]);
   LS.set('ct.set', S.set);
+  LS.set('ct.dec', S.dec);
+  LS.set('ct.rd', S.rd);
 };
 const active = () => S.items.filter((i) => !i.del);
+// Справи поза архівом: лише вони оновлюються і дають нагадування
+const live = () => S.items.filter((i) => !i.del && !i.arch);
 
 // ---------- Дані ----------
 const DATA_BASE = new URL('data/', location.href).href;
@@ -70,6 +79,8 @@ function dayLabel(isoDate) {
   const yr = y !== +kyivToday().slice(0, 4) ? ` ${y}` : '';
   return { main: `${d} ${MON[m - 1]}${yr}, ${wd}`, rel };
 }
+const fmtD = (d) => (d && d.length >= 10 ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : '');
+const dateMinus = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') - n * 864e5).toISOString().slice(0, 10);
 const fmtDT = (iso) => {
   const [d, t] = iso.split('T');
   const [y, m, dd] = d.split('-');
@@ -104,20 +115,24 @@ function itemTitle(it) {
   if (it.title) return it.title;
   if (it.t === 'kw') return it.query;
   const rows = S.hearings[it.id] || [];
-  return (rows.length && shortParties(rows[rows.length - 1].involved)) || `Справа № ${it.number}`;
+  const withInv = rows.filter((r) => r.involved);
+  return (withInv.length && shortParties(withInv[withInv.length - 1].involved)) || `Справа № ${it.number}`;
 }
 function addItem(data) {
   const now = Date.now();
   if (data.t === 'case') {
     const n = normCase(data.number);
     const ex = active().find((i) => i.t === 'case' && normCase(i.number) === n);
-    if (ex) return ex;
+    if (ex) {
+      if (ex.arch) updateItem(ex.id, { arch: false });
+      return ex;
+    }
   } else {
     const q = tokenize(data.query).join(' ');
     const ex = active().find((i) => i.t === 'kw' && tokenize(i.query).join(' ') === q && normText(i.court || '') === normText(data.court || ''));
     if (ex) return ex;
   }
-  const it = { id: uid(), c: now, u: now, ...data };
+  const it = { id: uid(), c: now, u: now, rb: dateMinus(kyivToday(), 7), ...data };
   S.items.push(it);
   save();
   syncSoon();
@@ -146,7 +161,7 @@ const ghHeaders = () => ({
 const ghUrl = () => `https://api.github.com/repos/${S.set.repo}/contents/watch.json`;
 async function ghGet() {
   const r = await fetch(ghUrl() + `?t=${Date.now()}`, { headers: ghHeaders(), cache: 'no-store' });
-  if (r.status === 404) return { items: [], sha: null };
+  if (r.status === 404) return { items: [], sha: null, ra: '', read: {} };
   if (r.status === 401 || r.status === 403) throw new Error('GitHub відхилив ключ доступу');
   if (!r.ok) throw new Error(`GitHub: помилка ${r.status}`);
   const j = await r.json();
@@ -154,10 +169,10 @@ async function ghGet() {
   try {
     data = JSON.parse(b64ToUtf8(j.content || ''));
   } catch { /* порожній файл */ }
-  return { items: Array.isArray(data.items) ? data.items : [], sha: j.sha };
+  return { items: Array.isArray(data.items) ? data.items : [], sha: j.sha, ra: data.ra || '', read: data.read || {} };
 }
-async function ghPut(items, sha) {
-  const body = { message: 'Оновлення списку справ', content: utf8ToB64(JSON.stringify({ v: 1, items }, null, 1)) };
+async function ghPut(items, rd, sha) {
+  const body = { message: 'Оновлення списку справ', content: utf8ToB64(JSON.stringify({ v: 1, items, ra: rd.ra, read: rd.read }, null, 1)) };
   if (sha) body.sha = sha;
   const r = await fetch(ghUrl(), { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
   if (r.status === 409 || r.status === 422) return false;
@@ -176,9 +191,12 @@ async function syncNow() {
       for (let i = 0; i < 3; i++) {
         const remote = await ghGet();
         const merged = mergeItems(S.items, remote.items);
+        const remoteRd = { ra: remote.ra, read: remote.read };
+        const rd = mergeRead(S.rd, remoteRd);
         S.items = merged;
+        S.rd = rd;
         save();
-        if (sameItems(merged, remote.items) || (await ghPut(merged, remote.sha))) break;
+        if ((sameItems(merged, remote.items) && sameItems(rd, remoteRd)) || (await ghPut(merged, rd, remote.sha))) break;
       }
       S.sync = 'ok:' + Date.now();
       return true;
@@ -204,10 +222,21 @@ function syncSoon() {
 // ---------- Оновлення засідань ----------
 async function refreshItem(it) {
   let rows;
-  if (it.t === 'case') rows = (await dc.findCase(it.number)).rows;
-  else rows = (await dc.findName(it.query, { court: it.court, maxShards: 40 })).rows.slice(-400);
-  S.hearings[it.id] = rows;
   const now = kyivNowIso();
+  if (it.t === 'case') {
+    rows = (await dc.findCase(it.number)).rows;
+    // Історія: минулі засідання, яких уже немає в даних суду, залишаються на пристрої
+    const have = new Set(rows.map(hearingUid));
+    const kept = (S.hearings[it.id] || []).filter((r) => r.iso < now && !have.has(hearingUid(r)));
+    rows = kept.concat(rows).sort((a, b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0)).slice(-250);
+    // Для старих засідань зберігаємо лише дату, суд, зал і суддю, щоб не переповнити памʼять
+    const lastPast = rows.filter((r) => r.iso < now).length - 1;
+    rows = rows.map((r, i) => (i < lastPast ? { ...r, involved: '', desc: '' } : r));
+  } else {
+    const from = kyivNowIso(Date.now() - 30 * 864e5);
+    rows = (await dc.findName(it.query, { court: it.court, maxShards: 40 })).rows.filter((r) => r.iso >= from).slice(0, 400);
+  }
+  S.hearings[it.id] = rows;
   const first = !S.init.has(it.id);
   for (const r of rows) {
     const u = hearingUid(r);
@@ -227,7 +256,7 @@ async function refreshAll(opts = {}) {
     await syncNow();
     S.meta = await dc.meta(true);
     LS.set('ct.meta', { built: S.meta.built, sourceModified: S.meta.sourceModified, rows: S.meta.rows, to: S.meta.to });
-    const list = active();
+    const list = live();
     const queue = list.slice();
     const errs = [];
     await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
@@ -241,13 +270,16 @@ async function refreshAll(opts = {}) {
       }
     }));
     // прибираємо застарілі записи
-    const ids = new Set(list.map((i) => i.id));
+    const ids = new Set(active().map((i) => i.id));
     for (const k of Object.keys(S.hearings)) if (!ids.has(k)) delete S.hearings[k];
-    const old = new Date(Date.now() - 40 * 864e5).toISOString().slice(0, 16);
+    const old = new Date(Date.now() - 420 * 864e5).toISOString().slice(0, 16);
     for (const u of S.seen) if ((u.split('|')[1] || '') < old) S.seen.delete(u);
     const nowIso = kyivNowIso();
     for (const u of S.fresh) if ((u.split('|')[1] || '') < nowIso) S.fresh.delete(u);
     if (errs.length) S.err = errs[0];
+    save();
+    softRender();
+    await refreshDecisions();
     save();
     await scheduleReminders();
   } catch (e) {
@@ -258,10 +290,96 @@ async function refreshAll(opts = {}) {
     else softRender();
   }
 }
+// ---------- Судові рішення ----------
+// Справи, за якими застосунок шукає рішення: справи зі списку і справи із запитів за учасником
+function trackedCases() {
+  const map = new Map();
+  for (const it of live()) {
+    if (it.t !== 'case') continue;
+    map.set(caseBase(it.number), { item: it, baseline: it.rb || dateMinus(new Date(it.c || Date.now()).toISOString().slice(0, 10), 7) });
+  }
+  for (const it of live()) {
+    if (it.t !== 'kw' || it.ag === false) continue;
+    const baseline = it.rb || dateMinus(new Date(it.c || Date.now()).toISOString().slice(0, 10), 7);
+    for (const r of S.hearings[it.id] || []) {
+      const b = caseBase(r.case);
+      if (!map.has(b) && map.size < 90) map.set(b, { item: it, row: r, baseline });
+    }
+  }
+  return map;
+}
+async function refreshDecisions() {
+  const meta = await dc.decMeta(true);
+  S.decMeta = meta ? { built: meta.built, from: meta.from, sourceModified: meta.sourceModified } : null;
+  LS.set('ct.decmeta', S.decMeta);
+  if (!meta) return;
+  const bases = [...trackedCases().keys()];
+  const next = {};
+  const queue = bases.slice();
+  await Promise.all(Array.from({ length: Math.min(6, queue.length) }, async () => {
+    while (queue.length) {
+      const b = queue.shift();
+      try {
+        const rows = await dc.decisions(b);
+        next[b] = (rows || []).slice(0, 40);
+      } catch {
+        if (S.dec[b]) next[b] = S.dec[b];
+      }
+    }
+  }));
+  S.dec = next;
+}
+const isUnread = (d, baseline) => d.recv >= baseline && !(S.rd.ra && d.recv < S.rd.ra) && !S.rd.read[d.id];
+function decList() {
+  const out = [];
+  for (const [base, t] of trackedCases()) {
+    const title = t.item.t === 'case' ? itemTitle(t.item) : shortParties(t.row.involved) || `Справа № ${t.row.case}`;
+    for (const d of S.dec[base] || []) out.push({ ...d, base, item: t.item, title, unread: isUnread(d, t.baseline) });
+  }
+  return out.sort((a, b) => (a.recv < b.recv ? 1 : a.recv > b.recv ? -1 : b.id - a.id));
+}
+function markRead(id, recv) {
+  if (S.rd.read[id]) return;
+  S.rd.read[id] = recv;
+  save();
+  syncSoon();
+}
+function markAllRead() {
+  const today = kyivToday();
+  for (const d of decList()) if (d.unread && d.recv >= today) S.rd.read[d.id] = d.recv;
+  S.rd = mergeRead({ ra: today, read: S.rd.read }, null);
+  save();
+  syncSoon();
+  render();
+  toast('Усі рішення позначено прочитаними');
+}
+function decCard(d, opts = {}) {
+  return `<div class="card${d.unread ? ' unread' : ''}">
+    <div class="t">${h(d.form)} від ${h(fmtD(d.adj))} ${d.unread ? '<span class="tag new">нове</span>' : ''}</div>
+    ${opts.noTitle ? '' : `<div class="m"><b>${h(d.title)}</b></div>`}
+    <div class="m">№ ${h(d.case)} · ${h(d.court)}</div>
+    <div class="m">${d.judge ? `Суддя: ${h(d.judge)} · ` : ''}надійшло до реєстру ${h(fmtD(d.recv))}</div>
+    ${d.pub ? '' : '<div class="m warn">Текст рішення в реєстрі може бути закритий.</div>'}
+    <div class="btns"><a class="btn sm" href="${h(reviewUrl(d.id))}" target="_blank" rel="noopener" data-act="dec-open" data-id="${d.id}" data-recv="${h(d.recv)}">Відкрити в реєстрі</a>
+    ${d.unread ? `<button class="btn ghost sm" data-act="dec-read" data-id="${d.id}" data-recv="${h(d.recv)}">Прочитано</button>` : ''}</div></div>`;
+}
+function viewDecisions() {
+  const list = decList();
+  const unread = list.filter((d) => d.unread);
+  const rest = list.filter((d) => !d.unread);
+  let out = `<div class="head"><h1>Рішення</h1><button class="btn sec sm" data-act="dec-all" ${unread.length ? '' : 'disabled'}>Усі прочитані</button></div>`;
+  if (!S.decMeta) return out + `<div class="empty"><b>Даних про рішення ще немає</b>Застосунок завантажить їх під час наступного оновлення.</div>`;
+  out += `<p class="sub">Рішення, які надійшли до реєстру з ${h(fmtD(S.decMeta.from))}. ДСА публікує ці дані із затримкою 1-3 дні.</p>`;
+  if (!list.length) return out + `<div class="empty"><b>Рішень немає</b>У ваших справах немає рішень за цей період.</div>`;
+  if (unread.length) out += `<h2>Нові (${unread.length})</h2>` + unread.map((d) => decCard(d)).join('');
+  if (rest.length) out += `<h2>Прочитані</h2>` + rest.slice(0, 150).map((d) => decCard(d)).join('');
+  return out;
+}
+
 function agenda(includePastHours = 3) {
   const from = kyivNowIso(Date.now() - includePastHours * 36e5);
   const map = new Map();
-  for (const it of active()) {
+  for (const it of live()) {
     if (it.t === 'kw' && it.ag === false) continue;
     for (const r of S.hearings[it.id] || []) {
       if (r.iso < from) continue;
@@ -271,7 +389,7 @@ function agenda(includePastHours = 3) {
     }
   }
   // якщо справа є у списку, беремо її назву і для збігів за учасником
-  const byCase = new Map(active().filter((i) => i.t === 'case').map((i) => [normCase(i.number), i]));
+  const byCase = new Map(live().filter((i) => i.t === 'case').map((i) => [normCase(i.number), i]));
   const out = [...map.values()].map((x) => {
     const ci = byCase.get(normCase(x.case).split('(')[0]);
     return ci ? { ...x, item: ci } : x;
@@ -424,26 +542,59 @@ function viewAgenda() {
   if (!isNative) out += `<div class="btns"><button class="btn sec" data-act="ics-all">Додати всі засідання в Календар (.ics)</button></div><p class="note">Файл містить нагадування за добу і за годину.</p>`;
   return out;
 }
-function viewCases() {
-  const cases = active().filter((i) => i.t === 'case');
-  const kws = active().filter((i) => i.t === 'kw');
+const SORTS = [['next', 'за наступним засіданням'], ['title', 'за назвою'], ['number', 'за номером'], ['added', 'за датою додавання'], ['court', 'за судом'], ['dec', 'за останнім рішенням']];
+function sortCases(cases) {
   const now = kyivNowIso();
-  let out = `<div class="head"><h1>Справи</h1><button class="btn sm" data-act="go-search">Додати</button></div>`;
-  if (!cases.length && !kws.length) out += `<div class="empty"><b>Справ ще немає</b>Знайдіть справу за номером або додайте запит за учасником.</div>`;
-  const withNext = cases.map((it) => ({ it, next: (S.hearings[it.id] || []).find((r) => r.iso >= now) }));
-  withNext.sort((a, b) => (a.next ? a.next.iso : '9') < (b.next ? b.next.iso : '9') ? -1 : 1);
-  for (const { it, next } of withNext) {
+  const info = cases.map((it) => {
+    const rows = S.hearings[it.id] || [];
+    const decs = S.dec[caseBase(it.number)] || [];
+    return { it, next: rows.find((r) => r.iso >= now), court: rows.length ? rows[rows.length - 1].court : '', dec: decs.length ? decs[0].recv : '' };
+  });
+  const num = (n) => normCase(n).split(/[/-]/).map((x) => (/^\d+$/.test(x) ? x.padStart(7, '0') : x)).join('/');
+  const by = {
+    next: (a, b) => (a.next ? a.next.iso : '9').localeCompare(b.next ? b.next.iso : '9'),
+    title: (a, b) => itemTitle(a.it).localeCompare(itemTitle(b.it), 'uk'),
+    number: (a, b) => num(a.it.number).localeCompare(num(b.it.number)),
+    added: (a, b) => (b.it.c || 0) - (a.it.c || 0),
+    court: (a, b) => (a.court || 'я').localeCompare(b.court || 'я', 'uk') || itemTitle(a.it).localeCompare(itemTitle(b.it), 'uk'),
+    dec: (a, b) => (b.dec || '').localeCompare(a.dec || ''),
+  };
+  return info.sort(by[S.set.sort] || by.next);
+}
+function viewCases() {
+  const arch = S.cfilter === 'arch';
+  const all = active();
+  const nArch = all.filter((i) => i.arch).length;
+  const shown = all.filter((i) => !!i.arch === arch);
+  const cases = shown.filter((i) => i.t === 'case');
+  const kws = shown.filter((i) => i.t === 'kw');
+  const now = kyivNowIso();
+  let out = `<div class="head"><h1>Справи</h1><button class="btn sm" data-act="go-search">Додати</button></div>
+    <div class="seg"><button data-act="cfilter" data-f="live" class="${arch ? '' : 'on'}">Активні (${all.length - nArch})</button><button data-act="cfilter" data-f="arch" class="${arch ? 'on' : ''}">Архів (${nArch})</button></div>`;
+  if (cases.length > 1) {
+    out += `<label for="sortSel">Сортування</label><select id="sortSel" data-set="sort">${SORTS.map(([v, t]) => `<option value="${v}" ${S.set.sort === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
+  }
+  if (!shown.length) {
+    out += arch ? `<div class="empty"><b>Архів порожній</b>Відкрийте справу і натисніть «В архів». Архівні справи не оновлюються і не дають нагадувань.</div>`
+      : `<div class="empty"><b>Справ ще немає</b>Знайдіть справу за номером або додайте запит за учасником.</div>`;
+  }
+  const unreadBy = new Map();
+  for (const d of decList()) if (d.unread) unreadBy.set(d.base, (unreadBy.get(d.base) || 0) + 1);
+  for (const { it, next, court } of sortCases(cases)) {
+    const nu = unreadBy.get(caseBase(it.number)) || 0;
     out += `<button class="card" data-act="open" data-id="${h(it.id)}"><div class="t">${h(itemTitle(it))}</div>
-      <div class="m">№ ${h(it.number)}</div>
-      <div class="m">${next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>` : 'Призначених засідань немає'}</div></button>`;
+      <div class="m">№ ${h(it.number)}${court ? ` · ${h(court)}` : ''}</div>
+      ${arch ? '' : `<div class="m">${next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>` : 'Призначених засідань немає'}</div>`}
+      ${it.note ? `<div class="m clamp">${h(it.note)}</div>` : ''}
+      ${nu ? `<div style="margin-top:4px"><span class="tag new">нових рішень: ${nu}</span></div>` : ''}</button>`;
   }
   if (kws.length) out += `<h2>Запити за учасником або представником</h2>`;
   for (const it of kws) {
     const rows = (S.hearings[it.id] || []).filter((r) => r.iso >= now);
     out += `<button class="card" data-act="open" data-id="${h(it.id)}"><div class="t">${h(it.title || it.query)}</div>
-      <div class="m">${it.court ? `Суд: ${h(it.court)} · ` : ''}майбутніх засідань: ${rows.length}</div></button>`;
+      <div class="m">${it.court ? `Суд: ${h(it.court)} · ` : ''}${arch ? 'в архіві' : `майбутніх засідань: ${rows.length}`}</div></button>`;
   }
-  out += `<div class="btns"><button class="btn sec" data-act="import">Імпорт справ зі старого застосунку</button></div>`;
+  if (!arch) out += `<div class="btns"><button class="btn sec" data-act="import">Імпорт справ зі старого застосунку</button></div>`;
   return out;
 }
 function groupByCase(rows) {
@@ -486,7 +637,7 @@ function viewSearch() {
       <div class="m">Нові засідання за запитом зʼявлятимуться автоматично.</div></div>`;
   }
   if (!groups.length) {
-    out += `<div class="empty"><b>Нічого не знайдено</b>${isCase ? 'У даних суду немає засідань у цій справі за останні 14 днів і в майбутньому. Справу можна додати, і засідання зʼявиться після призначення.' : 'Перевірте написання або приберіть фільтр суду.'}</div>`;
+    out += `<div class="empty"><b>Нічого не знайдено</b>${isCase ? 'У даних суду немає засідань у цій справі за останні пів року і в майбутньому. Справу можна додати, і засідання зʼявиться після призначення.' : 'Перевірте написання або приберіть фільтр суду.'}</div>`;
     if (isCase) out += `<div class="btns"><button class="btn" data-act="watch-case" data-case="${h(q.q.trim())}">Стежити за справою № ${h(q.q.trim())}</button></div>`;
     return out;
   }
@@ -546,19 +697,23 @@ function viewSettings() {
 }
 function render() {
   const v = S.view;
-  $('#view').innerHTML = v === 'agenda' ? viewAgenda() : v === 'cases' ? viewCases() : v === 'search' ? viewSearch() : viewSettings();
+  $('#view').innerHTML = v === 'agenda' ? viewAgenda() : v === 'dec' ? viewDecisions() : v === 'cases' ? viewCases() : v === 'search' ? viewSearch() : viewSettings();
   document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.view === v));
   const nb = $('#badge');
   const cnt = agenda(0).filter((x) => S.fresh.has(x.uid)).length;
   nb.hidden = !cnt;
   nb.textContent = cnt;
+  const nd = $('#badgeD');
+  const cd = decList().filter((d) => d.unread).length;
+  nd.hidden = !cd;
+  nd.textContent = cd;
 }
 // Перемальовує лише списки. Форми пошуку і налаштувань не чіпає, щоб не збити введення.
 function softRender() {
   if ($('#dlg').open) return;
-  if (S.view === 'agenda' || S.view === 'cases') render();
+  if (S.view === 'agenda' || S.view === 'cases' || S.view === 'dec') render();
 }
-function go(view) {
+function setView(view) {
   if (S.view === 'agenda' && view !== 'agenda' && S.fresh.size) {
     S.fresh.clear();
     save();
@@ -567,6 +722,34 @@ function go(view) {
   render();
   window.scrollTo(0, 0);
 }
+// Навігація записується в історію: жест «назад» повертає до засідань і закриває вікно справи
+function go(view) {
+  if (view === S.view) return render();
+  const st = history.state;
+  if (view === 'agenda') {
+    if (st && st.view) return history.back();
+    return setView('agenda');
+  }
+  if (st && st.view) history.replaceState({ view }, '');
+  else history.pushState({ view }, '');
+  setView(view);
+}
+function showDlg() {
+  const d = $('#dlg');
+  if (!d.open) {
+    d.showModal();
+    history.pushState({ dlg: 1, view: S.view === 'agenda' ? undefined : S.view }, '');
+  }
+  d.scrollTop = 0;
+}
+window.addEventListener('popstate', (e) => {
+  const d = $('#dlg');
+  if (d.open) {
+    d.close();
+    return;
+  }
+  setView((e.state && e.state.view) || 'agenda');
+});
 
 // ---------- Вікно справи ----------
 function openItem(id) {
@@ -578,15 +761,19 @@ function openItem(id) {
   if (it.t === 'case') {
     const fut = rows.filter((r) => r.iso >= now);
     const past = rows.filter((r) => r.iso < now).reverse();
-    const last = rows[rows.length - 1];
+    const last = rows.filter((r) => r.involved).pop() || rows[rows.length - 1];
+    const baseline = it.rb || dateMinus(new Date(it.c || Date.now()).toISOString().slice(0, 10), 7);
+    const decs = (S.dec[caseBase(it.number)] || []).map((d) => ({ ...d, unread: !it.arch && isUnread(d, baseline) }));
     body = `<div class="dh"><h1>${h(itemTitle(it))}</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
       <div class="m">Справа № ${h(it.number)} <button class="btn ghost sm" data-act="copy" data-text="${h(it.number)}">копіювати</button></div>
       <label>Власна назва справи</label><input type="text" data-item="${h(it.id)}" data-field="title" placeholder="${h(itemTitle({ ...it, title: '' }))}" value="${h(it.title || '')}">
       <label>Нотатка</label><textarea rows="2" data-item="${h(it.id)}" data-field="note">${h(it.note || '')}</textarea>
       <h2>Майбутні засідання</h2>${fut.length ? fut.map((r) => hearingCard({ ...r, item: null }, { date: true, title: dayLabel(r.iso.slice(0, 10)).main })).join('') : '<p class="note">Призначених засідань немає.</p>'}
-      ${past.length ? `<h2>Останні 14 днів</h2>${past.map((r) => hearingCard({ ...r, item: null }, { date: true, title: dayLabel(r.iso.slice(0, 10)).main })).join('')}` : ''}
+      ${past.length ? `<h2>Історія засідань (${past.length})</h2>${past.map((r) => hearingCard({ ...r, item: null }, { date: true, title: dayLabel(r.iso.slice(0, 10)).main })).join('')}` : ''}
+      ${decs.length ? `<h2>Судові рішення</h2>${decs.map((d) => decCard(d, { noTitle: true })).join('')}` : ''}
       ${last ? `<h2>Учасники</h2><div class="card m">${h(last.involved)}</div><h2>Склад суду</h2><div class="card m">${h(last.judges)}</div>` : ''}
-      <div class="btns">${!isNative && fut.length ? `<button class="btn sec" data-act="ics-item" data-id="${h(it.id)}">У Календар (.ics)</button>` : ''}<button class="btn danger" data-act="del" data-id="${h(it.id)}">Видалити зі списку</button></div>`;
+      <div class="btns">${!isNative && fut.length ? `<button class="btn sec" data-act="ics-item" data-id="${h(it.id)}">У Календар (.ics)</button>` : ''}<button class="btn sec" data-act="arch" data-id="${h(it.id)}">${it.arch ? 'Повернути з архіву' : 'В архів'}</button><button class="btn danger" data-act="del" data-id="${h(it.id)}">Видалити зі списку</button></div>
+      <button class="btn wide" data-act="close">Закрити</button>`;
   } else {
     const fut = rows.filter((r) => r.iso >= now);
     body = `<div class="dh"><h1>${h(it.query)}</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
@@ -594,17 +781,18 @@ function openItem(id) {
       <label class="chk"><input type="checkbox" data-item="${h(it.id)}" data-field="ag" ${it.ag === false ? '' : 'checked'}> Показувати в засіданнях і нагадувати</label>
       <h2>Майбутні засідання (${fut.length})</h2>
       ${fut.length ? fut.slice(0, 100).map((r) => hearingCard({ ...r, item: null }, { date: true }) + `<div class="btns" style="margin:-4px 0 12px"><button class="btn ghost sm" data-act="watch-case" data-case="${h(r.case.split('(')[0])}">Стежити за справою окремо</button></div>`).join('') : '<p class="note">Майбутніх засідань немає.</p>'}
-      <div class="btns"><button class="btn danger" data-act="del" data-id="${h(it.id)}">Видалити запит</button></div>`;
+      <div class="btns"><button class="btn sec" data-act="arch" data-id="${h(it.id)}">${it.arch ? 'Повернути з архіву' : 'В архів'}</button><button class="btn danger" data-act="del" data-id="${h(it.id)}">Видалити запит</button></div>
+      <button class="btn wide" data-act="close">Закрити</button>`;
   }
   $('#dlgBody').innerHTML = body;
-  const d = $('#dlg');
-  if (!d.open) d.showModal();
-  d.scrollTop = 0;
+  S.openId = it.id;
+  showDlg();
 }
 function closeDlg() {
   const d = $('#dlg');
-  if (d.open) d.close();
-  render();
+  if (!d.open) return render();
+  if (history.state && history.state.dlg) history.back();
+  else d.close();
 }
 
 
@@ -614,8 +802,7 @@ function openImport() {
   IMP.found = [];
   IMP.src = '';
   renderImport();
-  const d = $('#dlg');
-  if (!d.open) d.showModal();
+  showDlg();
 }
 function renderImport() {
   const have = new Set(active().filter((i) => i.t === 'case').map((i) => normCase(i.number)));
@@ -742,7 +929,27 @@ document.addEventListener('click', async (e) => {
     const it = S.items.find((i) => i.id === el.dataset.id);
     const now = kyivNowIso();
     downloadIcs((S.hearings[el.dataset.id] || []).filter((r) => r.iso >= now).map((r) => ({ ...r, item: it })), `sprava-${it.number.replace(/\W+/g, '-')}.ics`);
-  } else if (a === 'import') openImport();
+  } else if (a === 'arch') {
+    const it = S.items.find((i) => i.id === el.dataset.id);
+    if (!it) return;
+    const toArch = !it.arch;
+    updateItem(it.id, { arch: toArch });
+    save();
+    closeDlg();
+    toast(toArch ? 'Справу перенесено в архів' : 'Справу повернуто з архіву');
+    if (toArch) scheduleReminders();
+    else refreshAll({ force: true });
+  } else if (a === 'cfilter') {
+    S.cfilter = el.dataset.f;
+    render();
+  } else if (a === 'dec-open' || a === 'dec-read') {
+    markRead(el.dataset.id, el.dataset.recv);
+    setTimeout(() => {
+      if ($('#dlg').open && S.openId) openItem(S.openId);
+      else render();
+    }, a === 'dec-open' ? 400 : 0);
+  } else if (a === 'dec-all') markAllRead();
+  else if (a === 'import') openImport();
   else if (a === 'imp-scan') importScan();
   else if (a === 'imp-add') importAdd();
   else if (a === 'notif-on') enableNotifications();
@@ -768,6 +975,7 @@ document.addEventListener('change', (e) => {
     S.set[t.dataset.set] = t.type === 'checkbox' ? t.checked : t.value.trim();
     save();
     if (t.type === 'checkbox') scheduleReminders();
+    if (t.dataset.set === 'sort') render();
   } else if (t.dataset.item) {
     const val = t.type === 'checkbox' ? t.checked : t.value.trim();
     updateItem(t.dataset.item, { [t.dataset.field]: val });
@@ -777,7 +985,11 @@ document.addEventListener('change', (e) => {
 $('#dlg').addEventListener('click', (e) => {
   if (e.target === $('#dlg')) closeDlg();
 });
-$('#dlg').addEventListener('close', () => render());
+$('#dlg').addEventListener('close', () => {
+  S.openId = null;
+  if (history.state && history.state.dlg) history.back();
+  render();
+});
 
 // Оновлення під час кожного відкриття або повернення до застосунку
 let lastRefresh = 0;

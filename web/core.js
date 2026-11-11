@@ -9,6 +9,12 @@ export const shardKey = (c) => {
   const m = /^(\d{1,4})\//.exec(c || '');
   return m ? m[1] : 'x';
 };
+// Основний номер справи без суфіксів: «127/1/26-ц (2/127/5/26)» -> «127/1/26»
+export const caseBase = (c) => {
+  const n = normCase(c);
+  const m = /^(\d{1,4}\/\d+\/\d{2})(?!\d)/.exec(n);
+  return m ? m[1] : n;
+};
 export const bucketName = (tok) =>
   [...tok.slice(0, 3)].map((ch) => ch.charCodeAt(0).toString(16).padStart(4, '0')).join('');
 
@@ -148,6 +154,47 @@ export class DataClient {
       throw e;
     }
   }
+  // ---- Судові рішення (ЄДРСР) ----
+  async decMeta(force = false) {
+    if (this._dec !== undefined && !force) return this._dec;
+    try {
+      const buf = await this.fetchBytes('dec.json', { fresh: true });
+      this._dec = buf ? JSON.parse(await gunzipMaybe(buf)) : null;
+    } catch {
+      this._dec = null;
+    }
+    this._decFiles = new Map();
+    return this._dec;
+  }
+  async decisions(caseNo) {
+    const dec = await this.decMeta();
+    if (!dec) return null;
+    const base = caseBase(caseNo);
+    const key = shardKey(base);
+    const B = dec.b[key];
+    if (!B) return [];
+    const name = `d/${key}_${hash32(base) % B}.json.gz?v=${encodeURIComponent(dec.built)}`;
+    let p = this._decFiles.get(name);
+    if (!p) {
+      p = (async () => {
+        const buf = await this.fetchBytes(name, {});
+        return buf ? JSON.parse(await gunzipMaybe(buf)) : null;
+      })();
+      this._decFiles.set(name, p);
+      p.catch(() => this._decFiles.delete(name));
+    }
+    const f = await p;
+    if (!f) return [];
+    const out = [];
+    for (const r of f.rows) {
+      if (caseBase(r[1]) !== base) continue;
+      out.push({
+        id: r[0], case: r[1], adj: r[2], recv: r[3], form: dec.forms[r[4]] || 'Документ',
+        kind: dec.kinds[r[5]] || '', court: f.courts[r[6]] || '', judge: f.judges[r[7]] || '', pub: r[8] !== 0,
+      });
+    }
+    return out;
+  }
   // Пошук за номером справи (повний номер або його початок з кодом суду)
   async findCase(q) {
     const n = normCase(q);
@@ -251,6 +298,21 @@ export function mergeItems(a, b) {
     .sort((x, y) => (x.c || 0) - (y.c || 0) || (x.id < y.id ? -1 : 1));
 }
 export const sameItems = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// Стан прочитання рішень: ra = дата «усе прочитано до», read = {id рішення: дата надходження}
+export function mergeRead(a, b) {
+  const ra = [a && a.ra, b && b.ra].filter(Boolean).sort().pop() || '';
+  const read = {};
+  const old = new Date(Date.now() - 150 * 864e5).toISOString().slice(0, 10);
+  for (const src of [a && a.read, b && b.read]) {
+    for (const [id, d] of Object.entries(src || {})) {
+      if (d >= old && !(ra && d < ra)) read[id] = d;
+    }
+  }
+  const sorted = {};
+  for (const k of Object.keys(read).sort()) sorted[k] = read[k];
+  return { ra, read: sorted };
+}
+export const reviewUrl = (id) => `https://reyestr.court.gov.ua/Review/${id}`;
 
 export function utf8ToB64(str) {
   const bytes = new TextEncoder().encode(str);

@@ -51,7 +51,23 @@ for (let i = 0; i < N; i++) {
 }
 console.log(`Пошук за номером: ${okCase}/${tried}. Пошук за учасником: ${okName}/${triedName} (надто широкий запит: ${trunc}, пропущено: ${missed}).`);
 console.log(`Точний запит за учасником (${narrow}): у середньому ${(sumShards / (narrow || 1)).toFixed(1)} судів і ${(sumBytes / (narrow || 1) / 1024).toFixed(0)} КБ, максимум ${maxShards} судів і ${(maxBytes / 1024).toFixed(0)} КБ.`);
-if (okCase < tried || missed > 0) {
+// рішення: випадкові записи мають знаходитися за номером справи
+const dm = await dc.decMeta();
+let decOk = 0, decTried = 0;
+if (dm) {
+  const { readdirSync } = await import('node:fs');
+  const { gunzipSync } = await import('node:zlib');
+  const dfiles = readdirSync(`${dir}/d`);
+  for (let i = 0; i < 60 && dfiles.length; i++) {
+    const f = JSON.parse(gunzipSync(readFileSync(`${dir}/d/${dfiles[rnd(dfiles.length)]}`)).toString());
+    const r = f.rows[rnd(f.rows.length)];
+    decTried++;
+    const got = await dc.decisions(r[1]);
+    if (got && got.some((x) => x.id === r[0])) decOk++;
+  }
+  console.log(`Рішення: ${decOk}/${decTried} знайдено за номером справи. Усього рішень: ${dm.rows}, з ${dm.from}.`);
+} else console.log('Даних про рішення немає.');
+if (okCase < tried || missed > 0 || decOk < decTried) {
   console.error('Самоперевірка не пройдена.');
   process.exit(1);
 }
