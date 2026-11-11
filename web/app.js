@@ -587,7 +587,7 @@ function sortCases(cases) {
     const rows = S.hearings[it.id] || [];
     const decs = S.dec[caseBase(it.number)] || [];
     const cards = cardsOf(it);
-    const st = cards.find((c) => c.stage) || cards[0];
+    const st = cards.find((c) => c.stage || c.result) || cards[0];
     return { it, next: rows.find((r) => r.iso >= now), court: rows.length ? rows[rows.length - 1].court : st ? st.court : '', dec: decs.length ? decs[0].recv : '', st };
   });
   const num = (n) => normCase(n).split(/[/-]/).map((x) => (/^\d+$/.test(x) ? x.padStart(7, '0') : x)).join('/');
@@ -626,7 +626,7 @@ function viewCases() {
     out += `<button class="card" data-act="open" data-id="${h(it.id)}"><div class="t">${h(itemTitle(it))}</div>
       <div class="m">№ ${h(it.number)}${court ? ` · ${h(court)}` : ''}</div>
       ${arch ? '' : `<div class="m">${next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>` : 'Призначених засідань немає'}</div>`}
-      ${st && st.stage ? `<div class="m">Стадія: <b>${h(st.stage)}</b>${st.sd ? ` (${h(fmtD(st.sd))})` : ''}</div>` : ''}
+      ${st && (st.stage || st.result) ? `<div class="m">Стадія: <b>${h(st.stage || st.result)}</b>${st.sd ? ` (${h(fmtD(st.sd))})` : ''}</div>` : ''}
       ${it.note ? `<div class="m clamp">${h(it.note)}</div>` : ''}
       ${nu ? `<div style="margin-top:4px"><span class="tag new">нових рішень: ${nu}</span></div>` : ''}</button>`;
   }
@@ -807,9 +807,9 @@ function openItem(id) {
     const cards = cardsOf(it);
     const cardParts = (cards.filter((c) => c.parts).sort((x, y) => y.parts.length - x.parts.length)[0] || {}).parts || '';
     const stan = cards.length
-      ? cards.map((c) => `<div class="card"><div class="t">${h(c.stage || 'Стадію не вказано')}${c.sd ? ` · ${h(fmtD(c.sd))}` : ''}</div>
+      ? cards.map((c) => `<div class="card"><div class="t">${h(c.stage || c.result || 'Стадію не вказано')}${c.sd ? ` · ${h(fmtD(c.sd))}` : ''}</div>
           <div class="m">${h(c.court)}${c.proc ? ` · провадження № ${h(c.proc)}` : ''}</div>
-          ${c.result ? `<div class="m">Результат: ${h(c.result)}</div>` : ''}
+          ${c.result && c.stage ? `<div class="m">Результат: ${h(c.result)}</div>` : ''}
           ${c.type ? `<div class="m">${h(c.type)}</div>` : ''}
           <div class="m">${c.judge ? `${h(c.judge)} · ` : ''}${c.reg ? `зареєстровано ${h(fmtD(c.reg))}` : ''}</div>
           ${c.desc ? `<div class="m clamp">${h(c.desc)}</div>` : ''}</div>`).join('')
