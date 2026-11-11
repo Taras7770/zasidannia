@@ -9,6 +9,9 @@ on:
       url:
         description: Адреса файлу (кілька через |)
         required: false
+      ids:
+        description: Ідентифікатори наборів (кілька через |)
+        required: false
 
 permissions:
   contents: read
@@ -25,4 +28,5 @@ jobs:
       - env:
           Q: ${{ inputs.q }}
           U: ${{ inputs.url }}
-        run: node scripts/probe.mjs "$Q" "$U"
+          I: ${{ inputs.ids }}
+        run: node scripts/probe.mjs "$Q" "$U" "$I"

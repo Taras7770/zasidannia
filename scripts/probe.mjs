@@ -14,6 +14,16 @@ if (q) {
     }
   }
 }
+const ids = process.argv[4];
+if (ids) {
+  for (const id of ids.split('|')) {
+    const j = await (await fetch(`https://data.gov.ua/api/3/action/package_show?id=${id}`, { headers: UA })).json();
+    const p = j.result;
+    console.log(`== ${p.title} | ${p.metadata_modified} | ресурсів: ${p.resources.length}`);
+    console.log((p.notes || '').slice(0, 1500));
+    for (const r of p.resources) console.log(`    ${r.name} | ${r.format} | ${r.size} | ${r.last_modified} | ${r.url} | ${(r.description || '').slice(0, 300)}`);
+  }
+}
 if (url) {
   for (const u of url.split('|')) {
     console.log('== файл', u);
