@@ -10,7 +10,7 @@ on:
         description: Запускати наступну частину автоматично (true або false)
         default: 'true'
   schedule:
-    - cron: '20 5 * * *'
+    - cron: '20 5,17 * * *'
 
 permissions:
   contents: write
