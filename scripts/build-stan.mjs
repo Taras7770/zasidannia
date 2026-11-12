@@ -58,12 +58,22 @@ for (const o of passport['Файли'] || []) {
   const prev = byDate.get(date);
   if (!prev || (prev.type === 'csv' && type === 'zip')) byDate.set(date, { date, url, type });
 }
+// Ремонт: повторна обробка вже оброблених файлів лише для вказаних частин бази
+if (args.repair && args.repair !== true) {
+  const ids = String(args.repair).split(',').map((x) => +x).filter((x) => Number.isInteger(x) && x >= 0 && x < S);
+  man.redoShards = [...new Set([...(man.redoShards || []), ...ids])];
+  man.redo = [...new Set([...(man.redo || []), ...man.processed])];
+  console.log(`Ремонт частин ${man.redoShards.join(',')}: файлів до повторної обробки ${man.redo.length}`);
+}
+const redoSet = new Set(man.redoShards || []);
 const done = new Set([...man.processed, ...man.skipped]);
 const from = args.from || '2000-01-01';
 const todo = [...byDate.values()]
   .filter((f) => !done.has(f.date) && (man.failed[f.date] || 0) < 3 && f.date >= from)
   .sort((a, b) => (a.date < b.date ? 1 : -1));
-console.log(`Файлів у наборі: ${byDate.size}, оброблено раніше: ${man.processed.length}, залишилось: ${todo.length}`);
+const redoTodo = (man.redo || []).filter((d) => byDate.has(d) && (man.failed['r' + d] || 0) < 3).sort().reverse()
+  .map((d) => ({ ...byDate.get(d), redo: true }));
+console.log(`Файлів у наборі: ${byDate.size}, оброблено раніше: ${man.processed.length}, залишилось: ${todo.length}, на ремонт: ${redoTodo.length}`);
 
 // ---- тимчасові частини ----
 const bufs = Array.from({ length: S }, () => []);
@@ -85,7 +95,7 @@ const iso = (d) => {
 const NEED = ['court_name', 'case_number', 'case_proc', 'registration_date', 'judge', 'participants', 'stage_date', 'stage_name', 'cause_result', 'type', 'description'];
 let rowsBatch = 0;
 
-async function parseStream(stream, date) {
+async function parseStream(stream, date, only) {
   let idx = null;
   let n = 0;
   let unsupported = false;
@@ -107,6 +117,7 @@ async function parseStream(stream, date) {
     const line = [date, court, num, clean(g(2)), iso(g(3)), clean(g(4)), clean(g(5)).slice(0, 1500), iso(g(6)),
       clean(g(7)), clean(g(8)), clean(g(9)), clean(g(10)).slice(0, 300)].join('\t') + '\n';
     const i = hash32(caseBase(num)) % S;
+    if (only && !only.has(i)) return;
     bufs[i].push(line);
     buffered += line.length;
     n++;
@@ -140,23 +151,25 @@ async function processFile(f, file) {
     const names = execFileSync('unzip', ['-Z1', file]).toString().trim().split('\n').filter((x) => /\.csv$/i.test(x));
     for (const name of names) {
       const child = spawn('unzip', ['-p', file, name], { stdio: ['ignore', 'pipe', 'ignore'] });
-      const k = await parseStream(child.stdout, f.date);
+      const k = await parseStream(child.stdout, f.date, f.redo ? redoSet : null);
       if (k > 0) n += k;
     }
     if (!names.length) return -1;
   } else {
-    n = await parseStream(createReadStream(file), f.date);
+    n = await parseStream(createReadStream(file), f.date, f.redo ? redoSet : null);
   }
   return n;
 }
 
 // ---- обробка з попереднім завантаженням ----
 const batch = todo.slice(0, MAX_FILES);
+for (const f of redoTodo) if (batch.length < MAX_FILES) batch.push(f);
 const pending = new Map();
 const startDl = (k) => {
   if (k < batch.length && !pending.has(k)) pending.set(k, download(batch[k]).then((file) => ({ file }), (err) => ({ err })));
 };
 let filesDone = 0;
+let redoDone = 0;
 for (let k = 0; k < batch.length; k++) {
   if ((Date.now() - started) / 60000 > MAX_MIN || rowsBatch > MAX_ROWS) break;
   for (let j = k; j < k + 3; j++) startDl(j);
@@ -164,7 +177,8 @@ for (let k = 0; k < batch.length; k++) {
   const { file, err } = await pending.get(k);
   pending.delete(k);
   if (err) {
-    man.failed[f.date] = (man.failed[f.date] || 0) + 1;
+    const fk = (f.redo ? 'r' : '') + f.date;
+    man.failed[fk] = (man.failed[fk] || 0) + 1;
     console.log(`${f.date}: помилка завантаження (${err.message})`);
     continue;
   }
@@ -177,7 +191,15 @@ for (let k = 0; k < batch.length; k++) {
     console.log(`${f.date}: помилка розбору (${e.message})`);
   }
   if (/^https?:/.test(f.url)) rmSync(file, { force: true });
-  if (n === -1) man.skipped.push(f.date);
+  if (f.redo) {
+    if (n === -2) man.failed['r' + f.date] = (man.failed['r' + f.date] || 0) + 1;
+    else {
+      man.redo = man.redo.filter((d) => d !== f.date);
+      rowsBatch += Math.max(0, n);
+      filesDone++;
+      redoDone++;
+    }
+  } else if (n === -1) man.skipped.push(f.date);
   else if (n === -2) man.failed[f.date] = (man.failed[f.date] || 0) + 1;
   else {
     man.processed.push(f.date);
@@ -237,9 +259,15 @@ man.rows = total;
 man.newest = man.processed[man.processed.length - 1] || '';
 man.oldest = man.processed[0] || '';
 man.updated = new Date().toISOString();
-const remaining = todo.length - filesDone - (man.skipped.filter((d) => batch.some((b) => b.date === d)).length);
-man.remaining = Math.max(0, remaining);
+const left = [...byDate.values()].filter((f) => !man.processed.includes(f.date) && !man.skipped.includes(f.date) && (man.failed[f.date] || 0) < 3 && f.date >= from).length;
+const redoLeft = (man.redo || []).filter((d) => byDate.has(d) && (man.failed['r' + d] || 0) < 3).length;
+if (!redoLeft && man.redoShards) {
+  delete man.redoShards;
+  delete man.redo;
+}
+man.remaining = left;
+man.redoRemaining = redoLeft;
 writeFileSync(join(OUT, 'manifest.json'), JSON.stringify(man));
-console.log(`База: ${total} проваджень, змінено частин: ${changed} (${(bytes / 1e6).toFixed(1)} МБ), файли від ${man.oldest} до ${man.newest}, залишилось файлів: ${man.remaining}`);
-setOutput('remaining', man.remaining);
+console.log(`База: ${total} проваджень, змінено частин: ${changed} (${(bytes / 1e6).toFixed(1)} МБ), файли від ${man.oldest} до ${man.newest}, залишилось файлів: ${man.remaining}, на ремонт: ${man.redoRemaining}`);
+setOutput('remaining', man.remaining + man.redoRemaining);
 setOutput('done', filesDone);

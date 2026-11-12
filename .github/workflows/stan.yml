@@ -9,6 +9,9 @@ on:
       chain:
         description: Запускати наступну частину автоматично (true або false)
         default: 'true'
+      repair:
+        description: Номери частин бази для ремонту через кому (необовʼязково)
+        required: false
   schedule:
     - cron: '20 5,17 * * *'
 
@@ -39,20 +42,49 @@ jobs:
           df -h / | tail -1
       - name: Завантажити наявну базу
         run: |
-          mkdir -p /tmp/stan/base
+          mkdir -p /tmp/stan/base /tmp/stan/packs
           gh release view stan >/dev/null 2>&1 || gh release create stan --title "Стан розгляду справ: дані" --notes "Службові дані застосунку «Мої засідання». Джерело: ДСА України, набір «Інформація щодо стану розгляду справ» (dsa.court.gov.ua)."
-          gh release download stan -D /tmp/stan/base -p 'base-*.tsv.gz' -p 'manifest.json' --clobber || true
-          echo "файлів бази: $(ls /tmp/stan/base | wc -l), розмір: $(du -sh /tmp/stan/base | cut -f1)"
+          gh release download stan -D /tmp/stan/base -p 'manifest.json' --clobber || true
+          GEN=$(jq -r '.gen // 0' /tmp/stan/base/manifest.json 2>/dev/null || echo 0)
+          if [ "$GEN" != "0" ]; then
+            # База лежить у 16 архівах: так завдання робить мало запитів до GitHub
+            gh release download stan -D /tmp/stan/packs -p "pack-*.g${GEN}.tar" --clobber
+            N=$(ls /tmp/stan/packs/*.tar | wc -l)
+            EXPECT=$(jq -r '.packs // 16' /tmp/stan/base/manifest.json)
+            if [ "$N" != "$EXPECT" ]; then echo "Неповна база: $N архівів з $EXPECT"; exit 1; fi
+            for f in /tmp/stan/packs/*.tar; do tar -xf "$f" -C /tmp/stan/base; done
+            rm -f /tmp/stan/packs/*
+          else
+            gh release download stan -D /tmp/stan/base -p 'base-*.tsv.gz' --clobber || true
+          fi
+          echo "GEN=$GEN" >> "$GITHUB_ENV"
+          echo "покоління: $GEN, файлів бази: $(ls /tmp/stan/base | wc -l), розмір: $(du -sh /tmp/stan/base | cut -f1)"
       - name: Обробити щоденні файли
         id: run
-        run: node --max-old-space-size=8000 scripts/build-stan.mjs --work=/tmp/stan --max-files=${{ inputs.max_files || '150' }} --max-min=150
+        run: node --max-old-space-size=8000 scripts/build-stan.mjs --work=/tmp/stan --max-files=${{ inputs.max_files || '150' }} --max-min=150 ${{ inputs.repair && format('--repair={0}', inputs.repair) || '' }}
       - name: Зберегти базу
         run: |
-          cd /tmp/stan/out
-          ls base-*.tsv.gz 2>/dev/null | xargs -r -n 30 gh release upload stan --clobber
+          cd /tmp/stan
+          # Незмінені частини беремо зі старої бази, щоб архіви були повні
+          for f in base/base-*.tsv.gz; do [ -f "out/$(basename "$f")" ] || cp "$f" out/; done
+          NEW=$((GEN + 1))
+          rm -f packs/*
+          PACKS=0
+          for k in $(seq 0 15); do
+            FILES=""
+            for i in $(seq $((k * 32)) $((k * 32 + 31))); do
+              if [ -f "out/base-$i.tsv.gz" ]; then FILES="$FILES base-$i.tsv.gz"; fi
+            done
+            if [ -n "$FILES" ]; then tar -cf "packs/pack-$k.g$NEW.tar" -C out $FILES; PACKS=$((PACKS + 1)); fi
+          done
+          du -sh packs | cut -f1
+          # Спочатку нові архіви, потім опис бази. Старі архіви видаляємо останніми, щоб збій не знищив дані.
+          gh release upload stan packs/pack-*.g$NEW.tar
+          jq --argjson g "$NEW" --argjson p "$PACKS" '.gen=$g | .packs=$p | .perPack=32' out/manifest.json > manifest.json
           gh release upload stan manifest.json --clobber
-          du -sh /tmp/stan/out | cut -f1
+          gh release view stan --json assets --jq '.assets[].name' | grep -v "\.g$NEW\.tar$" | grep -v '^manifest\.json$' | head -40 | while read -r n; do gh release delete-asset stan "$n" -y || true; done
       - name: Запустити наступну частину
         if: steps.run.outputs.remaining != '0' && steps.run.outputs.done != '0' && inputs.chain != 'false'
         run: |
+          sleep 90
           gh api -X POST "repos/${{ github.repository }}/actions/workflows/stan.yml/dispatches" -f ref=main -f "inputs[max_files]=${{ inputs.max_files || '150' }}" -f "inputs[chain]=true"
