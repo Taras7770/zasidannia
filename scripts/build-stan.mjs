@@ -65,7 +65,14 @@ if (args.repair && args.repair !== true) {
   man.redo = [...new Set([...(man.redo || []), ...man.processed])];
   console.log(`Ремонт частин ${man.redoShards.join(',')}: файлів до повторної обробки ${man.redo.length}`);
 }
+// Повторна обробка останніх N файлів для всіх частин (після зміни правил злиття)
+if (args['reprocess-last']) {
+  const last = [...man.processed].sort().slice(-(+args['reprocess-last']));
+  man.redo = [...new Set([...(man.redo || []), ...last])];
+  console.log(`Повторна обробка останніх файлів: ${last.length}`);
+}
 const redoSet = new Set(man.redoShards || []);
+const redoOnly = redoSet.size ? redoSet : null;
 const done = new Set([...man.processed, ...man.skipped]);
 const from = args.from || '2000-01-01';
 const todo = [...byDate.values()]
@@ -151,12 +158,12 @@ async function processFile(f, file) {
     const names = execFileSync('unzip', ['-Z1', file]).toString().trim().split('\n').filter((x) => /\.csv$/i.test(x));
     for (const name of names) {
       const child = spawn('unzip', ['-p', file, name], { stdio: ['ignore', 'pipe', 'ignore'] });
-      const k = await parseStream(child.stdout, f.date, f.redo ? redoSet : null);
+      const k = await parseStream(child.stdout, f.date, f.redo ? redoOnly : null);
       if (k > 0) n += k;
     }
     if (!names.length) return -1;
   } else {
-    n = await parseStream(createReadStream(file), f.date, f.redo ? redoSet : null);
+    n = await parseStream(createReadStream(file), f.date, f.redo ? redoOnly : null);
   }
   return n;
 }
@@ -213,10 +220,11 @@ flushAll();
 console.log(`Оброблено файлів: ${filesDone}, рядків: ${rowsBatch}, ${((Date.now() - started) / 60000).toFixed(1)} хв`);
 
 // ---- злиття з базою ----
-// Перевага: запис зі стадією, потім новіший файл, потім новіша дата стадії
+// Перевага: запис зі стадією або результатом, потім новіший файл, потім новіша дата стадії.
+// Записи Верховного Суду не мають назви стадії, але мають результат.
 const better = (a, b) => {
-  const sa = a[8] ? 1 : 0;
-  const sb = b[8] ? 1 : 0;
+  const sa = a[8] || a[9] ? 1 : 0;
+  const sb = b[8] || b[9] ? 1 : 0;
   if (sa !== sb) return sa > sb;
   if (a[0] !== b[0]) return a[0] > b[0];
   return a[7] > b[7];
@@ -261,7 +269,7 @@ man.oldest = man.processed[0] || '';
 man.updated = new Date().toISOString();
 const left = [...byDate.values()].filter((f) => !man.processed.includes(f.date) && !man.skipped.includes(f.date) && (man.failed[f.date] || 0) < 3 && f.date >= from).length;
 const redoLeft = (man.redo || []).filter((d) => byDate.has(d) && (man.failed['r' + d] || 0) < 3).length;
-if (!redoLeft && man.redoShards) {
+if (!redoLeft) {
   delete man.redoShards;
   delete man.redo;
 }

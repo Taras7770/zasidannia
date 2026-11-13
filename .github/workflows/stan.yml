@@ -12,6 +12,9 @@ on:
       repair:
         description: Номери частин бази для ремонту через кому (необовʼязково)
         required: false
+      reprocess_last:
+        description: Повторно обробити останні N файлів (необовʼязково)
+        required: false
   schedule:
     - cron: '20 5,17 * * *'
 
@@ -61,7 +64,7 @@ jobs:
           echo "покоління: $GEN, файлів бази: $(ls /tmp/stan/base | wc -l), розмір: $(du -sh /tmp/stan/base | cut -f1)"
       - name: Обробити щоденні файли
         id: run
-        run: node --max-old-space-size=8000 scripts/build-stan.mjs --work=/tmp/stan --max-files=${{ inputs.max_files || '150' }} --max-min=150 ${{ inputs.repair && format('--repair={0}', inputs.repair) || '' }}
+        run: node --max-old-space-size=8000 scripts/build-stan.mjs --work=/tmp/stan --max-files=${{ inputs.max_files || '150' }} --max-min=150 ${{ inputs.repair && format('--repair={0}', inputs.repair) || '' }} ${{ inputs.reprocess_last && format('--reprocess-last={0}', inputs.reprocess_last) || '' }}
       - name: Зберегти базу
         run: |
           cd /tmp/stan
