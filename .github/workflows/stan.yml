@@ -82,7 +82,10 @@ jobs:
           gh release upload stan packs/pack-*.g$NEW.tar
           jq --argjson g "$NEW" --argjson p "$PACKS" '.gen=$g | .packs=$p | .perPack=32' out/manifest.json > manifest.json
           gh release upload stan manifest.json --clobber
-          gh release view stan --json assets --jq '.assets[].name' | grep -v "\.g$NEW\.tar$" | grep -v '^manifest\.json$' | head -40 | while read -r n; do gh release delete-asset stan "$n" -y || true; done
+          # Видаляємо всі архіви попередніх поколінь і залишки старого формату
+          NAMES=$(gh release view stan --json assets --jq '.assets[].name')
+          echo "$NAMES" | grep '^pack-' | grep -v "\.g$NEW\.tar$" | while read -r n; do gh release delete-asset stan "$n" -y || true; done
+          echo "$NAMES" | grep '^base-' | head -120 | while read -r n; do gh release delete-asset stan "$n" -y || true; done
       - name: Запустити наступну частину
         if: steps.run.outputs.remaining != '0' && steps.run.outputs.done != '0' && inputs.chain != 'false'
         run: |
