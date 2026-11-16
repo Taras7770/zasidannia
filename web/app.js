@@ -1277,6 +1277,18 @@ $('#dlg').addEventListener('close', () => {
   render();
 });
 
+// Запасний відступ під рядок стану Android, якщо система не повідомила його розмір
+if (isNative) {
+  setTimeout(() => {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;visibility:hidden;padding-top:var(--safe-area-inset-top, env(safe-area-inset-top, 0px))';
+    document.body.appendChild(probe);
+    const px = parseFloat(getComputedStyle(probe).paddingTop) || 0;
+    probe.remove();
+    if (px < 1) document.documentElement.style.setProperty('--safe-area-inset-top', '36px');
+  }, 700);
+}
+
 // Оновлення під час кожного відкриття або повернення до застосунку
 let lastRefresh = 0;
 function autoRefresh() {
