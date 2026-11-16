@@ -35,6 +35,8 @@ const S = {
   cfilter: 'live',
   afilter: 'all',
   mh: LS.get('ct.mh', []),
+  esud: LS.get('ct.esud', null),
+  es: Object.assign({ b: '', seen: {} }, LS.get('ct.es', {})),
   cards: LS.get('ct.cards', null),
   meta: LS.get('ct.meta', null),
   view: 'agenda',
@@ -54,6 +56,7 @@ const save = () => {
   LS.set('ct.dec', S.dec);
   LS.set('ct.rd', S.rd);
   LS.set('ct.mh', S.mh);
+  LS.set('ct.es', S.es);
 };
 const active = () => S.items.filter((i) => !i.del);
 // Справи поза архівом: лише вони оновлюються і дають нагадування
@@ -206,12 +209,15 @@ async function syncNow() {
         const rd = mergeRead(mergeRead(S.rd, remoteRd), legacy ? { ra: wd.ra || '', read: wd.read || {} } : null);
         const remoteMh = (st.data && Array.isArray(st.data.mh) && st.data.mh) || [];
         const mh = mergeItems(S.mh, remoteMh);
+        const remoteEs = { b: (st.data && st.data.es && st.data.es.b) || '', seen: (st.data && st.data.es && st.data.es.seen) || {} };
+        const es = mergeEs(S.es, remoteEs);
+        S.es = es;
         S.items = merged;
         S.rd = rd;
         S.mh = mh;
         save();
         const ok1 = (sameItems(merged, remoteItems) && !legacy) || (await ghPutJson('watch.json', { v: 1, items: merged }, w.sha, 'Оновлення списку справ'));
-        const ok2 = (sameItems(rd, remoteRd) && sameItems(mh, remoteMh)) || (await ghPutJson('state.json', { v: 1, ra: rd.ra, read: rd.read, mh }, st.sha, 'Позначки прочитання і ручні засідання'));
+        const ok2 = (sameItems(rd, remoteRd) && sameItems(mh, remoteMh) && sameItems(es, remoteEs)) || (await ghPutJson('state.json', { v: 1, ra: rd.ra, read: rd.read, mh, es }, st.sha, 'Позначки прочитання і ручні засідання'));
         if (ok1 && ok2) break;
       }
       S.sync = 'ok:' + Date.now();
@@ -225,6 +231,94 @@ async function syncNow() {
   })();
   return syncBusy;
 }
+// ---------- Електронний суд (esud.json у приватному репозиторії) ----------
+// Файл містить дату останнього документа у кожній справі з кабінету користувача.
+function mergeEs(a, b) {
+  const bs = [a && a.b, b && b.b].filter(Boolean).sort();
+  const seen = {};
+  for (const src of [a && a.seen, b && b.seen]) {
+    for (const [k, d] of Object.entries(src || {})) if (!seen[k] || d > seen[k]) seen[k] = d;
+  }
+  const keys = Object.keys(seen).sort();
+  return { b: bs[0] || '', seen: Object.fromEntries(keys.map((k) => [k, seen[k]])) };
+}
+async function loadEsud() {
+  if (!syncOn()) return;
+  try {
+    const r = await fetch(ghUrl('esud.json') + `?t=${Date.now()}`, { headers: { ...ghHeaders(), Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (j && j.cases) {
+      S.esud = { at: j.at, cases: j.cases };
+      LS.set('ct.esud', S.esud);
+      if (!S.es.b && j.at) {
+        S.es.b = dateMinus(j.at.slice(0, 10), 3);
+        save();
+        syncSoon();
+      }
+    }
+  } catch { /* спробуємо під час наступного оновлення */ }
+}
+const esKey = (n) => caseBase(n) || normCase(n);
+const esOf = (it) => (it && it.t === 'case' && S.esud && S.esud.cases[esKey(it.number)]) || null;
+function esUnread(it) {
+  const e = esOf(it);
+  return !!e && !it.arch && !!S.es.b && e.last >= S.es.b && e.last > (S.es.seen[esKey(it.number)] || '');
+}
+function esList() {
+  const out = [];
+  for (const it of live()) {
+    const e = esOf(it);
+    if (e) out.push({ item: it, e, unread: esUnread(it) });
+  }
+  return out.sort((a, b) => (a.e.last < b.e.last ? 1 : a.e.last > b.e.last ? -1 : 0));
+}
+function esMark(it) {
+  const e = esOf(it);
+  if (!e) return;
+  S.es.seen[esKey(it.number)] = e.last;
+  save();
+  syncSoon();
+}
+// Справи з кабінету, яких немає у списку застосунку
+function esMissing() {
+  if (!S.esud) return [];
+  const have = new Set(active().filter((i) => i.t === 'case').map((i) => esKey(i.number)));
+  return Object.entries(S.esud.cases).filter(([k]) => !have.has(k)).map(([k, e]) => ({ k, e }))
+    .sort((a, b) => (a.e.last < b.e.last ? 1 : a.e.last > b.e.last ? -1 : 0));
+}
+function openEsMissing() {
+  const list = esMissing();
+  $('#dlgBody').innerHTML = `<div class="dh"><h1>Справи з Електронного суду</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
+    <p class="note">Цих справ немає у вашому списку. Список відсортовано за датою останнього документа.</p>
+    ${list.length ? `<div class="btns"><button class="btn" data-act="es-add-all">Додати всі (${list.length})</button></div>` : '<p class="note">Усі справи з кабінету вже у списку.</p>'}
+    ${list.map(({ k, e }) => `<div class="card"><div class="row"><div class="grow"><div class="t">№ ${h(e.n)}</div><div class="m">${h(e.court || '')}</div><div class="m">Останній документ: ${h(fmtD(e.last))}</div></div>
+      <button class="btn sec sm" data-act="es-add" data-k="${h(k)}">Додати</button></div></div>`).join('')}
+    <button class="btn sec wide" data-act="close">Закрити</button>`;
+  S.openId = null;
+  showDlg();
+}
+function esAdd(keys) {
+  let n = 0;
+  for (const k of keys) {
+    const e = S.esud && S.esud.cases[k];
+    if (!e) continue;
+    addItem({ t: 'case', number: caseBase(e.n) || e.n });
+    n++;
+  }
+  return n;
+}
+function esCard(x) {
+  const it = x.item;
+  return `<div class="card${x.unread ? ' unread' : ''}">
+    <div class="t">Документ від ${h(fmtD(x.e.last))} ${x.unread ? '<span class="tag new">нове</span>' : ''}</div>
+    <div class="m"><b>${h(itemTitle(it))}</b></div>
+    <div class="m">№ ${h(it.number)}${x.e.court ? ` · ${h(x.e.court)}` : ''}</div>
+    <div class="btns"><button class="btn sm" data-act="open" data-id="${h(it.id)}">Відкрити справу</button>
+    <a class="btn sec sm" href="https://cabinet.court.gov.ua/cases" target="_blank" rel="noopener" data-act="copy" data-text="${h(it.number)}">Електронний суд</a>
+    ${x.unread ? `<button class="btn ghost sm" data-act="es-read" data-id="${h(it.id)}">Прочитано</button>` : ''}</div></div>`;
+}
+
 // ---------- Стан розгляду справ (cards.json у приватному репозиторії) ----------
 async function loadCards() {
   if (!syncOn()) return;
@@ -296,6 +390,7 @@ async function refreshAll(opts = {}) {
   try {
     await syncNow();
     loadCards().then(softRender);
+    loadEsud().then(softRender);
     S.meta = await dc.meta(true);
     LS.set('ct.meta', { built: S.meta.built, sourceModified: S.meta.sourceModified, rows: S.meta.rows, to: S.meta.to });
     const list = live();
@@ -393,6 +488,7 @@ function markAllRead() {
   const today = kyivToday();
   for (const d of decList()) if (d.unread && d.recv >= today) S.rd.read[d.id] = d.recv;
   S.rd = mergeRead({ ra: today, read: S.rd.read }, null);
+  for (const x of esList()) if (x.unread) S.es.seen[esKey(x.item.number)] = x.e.last;
   save();
   syncSoon();
   render();
@@ -406,6 +502,7 @@ function decCard(d, opts = {}) {
     <div class="m">${d.judge ? `Суддя: ${h(d.judge)} · ` : ''}надійшло до реєстру ${h(fmtD(d.recv))}</div>
     ${d.pub ? '' : '<div class="m warn">Текст рішення в реєстрі може бути закритий.</div>'}
     <div class="btns"><a class="btn sm" href="${h(reviewUrl(d.id))}" target="_blank" rel="noopener" data-act="dec-open" data-id="${d.id}" data-recv="${h(d.recv)}">Відкрити в реєстрі</a>
+    ${!opts.noTitle && d.item && d.item.t === 'case' ? `<button class="btn sec sm" data-act="open" data-id="${h(d.item.id)}">Відкрити справу</button>` : ''}
     ${d.unread ? `<button class="btn ghost sm" data-act="dec-read" data-id="${d.id}" data-recv="${h(d.recv)}">Прочитано</button>` : ''}</div></div>`;
 }
 function viewDecisions() {
@@ -413,11 +510,18 @@ function viewDecisions() {
   const unread = list.filter((d) => d.unread);
   const since = dateMinus(kyivToday(), 90);
   const rest = list.filter((d) => !d.unread && d.recv >= since);
-  let out = `<div class="head"><h1>Рішення</h1><button class="btn sec sm" data-act="dec-all" ${unread.length ? '' : 'disabled'}>Усі прочитані</button></div>`;
+  const es = esList();
+  const esNew = es.filter((x) => x.unread);
+  let out = `<div class="head"><h1>Рішення</h1><button class="btn sec sm" data-act="dec-all" ${unread.length || esNew.length ? '' : 'disabled'}>Усі прочитані</button></div>`;
+  if (S.esud) {
+    out += `<h2>Електронний суд: нові документи (${esNew.length})</h2>${esNew.map(esCard).join('')}
+      <p class="note">Дані кабінету станом на ${h(fmtDT(S.esud.at))}. ${esNew.length ? '' : 'Нових документів немає. '}Справ із кабінету у списку: ${es.length}.</p>
+      ${esMissing().length ? `<div class="btns" style="margin-bottom:12px"><button class="btn sec sm" data-act="es-missing">У кабінеті є ще ${esMissing().length} справ не зі списку</button></div>` : ''}`;
+  }
   if (!S.decMeta) return out + `<div class="empty"><b>Даних про рішення ще немає</b>Застосунок завантажить їх під час наступного оновлення.</div>`;
   out += `<p class="sub">Нові рішення та прочитані за останні 90 днів. Усі рішення з ${h(fmtD(S.decMeta.from))} є у вікні справи. ДСА публікує ці дані із затримкою 1-3 дні.</p>`;
   if (!unread.length && !rest.length) return out + `<div class="empty"><b>Нових рішень немає</b>Старіші рішення відкрийте у вікні справи.</div>`;
-  if (unread.length) out += `<h2>Нові (${unread.length})</h2>` + unread.map((d) => decCard(d)).join('');
+  if (unread.length) out += `<h2>Нові рішення з реєстру (${unread.length})</h2>` + unread.map((d) => decCard(d)).join('');
   if (rest.length) out += `<h2>Прочитані</h2>` + rest.slice(0, 150).map((d) => decCard(d)).join('');
   return out;
 }
@@ -697,7 +801,7 @@ function viewAgenda() {
   if (!isNative) out += `<div class="btns"><button class="btn sec" data-act="ics-all">Додати всі засідання в Календар (.ics)</button></div><p class="note">Файл містить нагадування за добу і за годину.</p>`;
   return out;
 }
-const SORTS = [['next', 'за наступним засіданням'], ['title', 'за назвою'], ['number', 'за номером'], ['added', 'за датою додавання'], ['court', 'за судом'], ['dec', 'за останнім рішенням'], ['stage', 'за датою стадії']];
+const SORTS = [['next', 'за наступним засіданням'], ['title', 'за назвою'], ['number', 'за номером'], ['added', 'за датою додавання'], ['court', 'за судом'], ['dec', 'за останнім рішенням'], ['stage', 'за датою стадії'], ['esud', 'за останнім документом в Е-суді']];
 function sortCases(cases) {
   const now = kyivNowIso();
   const info = cases.map((it) => {
@@ -716,6 +820,7 @@ function sortCases(cases) {
     court: (a, b) => (a.court || 'я').localeCompare(b.court || 'я', 'uk') || itemTitle(a.it).localeCompare(itemTitle(b.it), 'uk'),
     dec: (a, b) => (b.dec || '').localeCompare(a.dec || ''),
     stage: (a, b) => ((b.st && b.st.sd) || '').localeCompare((a.st && a.st.sd) || ''),
+    esud: (a, b) => ((esOf(b.it) || {}).last || '').localeCompare((esOf(a.it) || {}).last || ''),
   };
   return info.sort(by[S.set.sort] || by.next);
 }
@@ -744,8 +849,9 @@ function viewCases() {
       <div class="m">№ ${h(it.number)}${court ? ` · ${h(court)}` : ''}</div>
       ${arch ? '' : `<div class="m">${it.nh ? 'Засідання не відстежуються' : next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>${next.manual ? ' (вручну)' : ''}` : 'Призначених засідань немає'}</div>`}
       ${st && (st.stage || st.result) ? `<div class="m">Стадія: <b>${h(st.stage || st.result)}</b>${st.sd ? ` (${h(fmtD(st.sd))})` : ''}</div>` : ''}
+      ${esOf(it) ? `<div class="m">Е-суд: останній документ ${h(fmtD(esOf(it).last))}</div>` : ''}
       ${it.note ? `<div class="m clamp">${h(it.note)}</div>` : ''}
-      ${nu ? `<div style="margin-top:4px"><span class="tag new">нових рішень: ${nu}</span></div>` : ''}</button>`;
+      ${nu || esUnread(it) ? `<div style="margin-top:4px">${nu ? `<span class="tag new">нових рішень: ${nu}</span>` : ''}${esUnread(it) ? '<span class="tag new">новий документ в Е-суді</span>' : ''}</div>` : ''}</button>`;
   }
   if (kws.length) out += `<h2>Запити за учасником або представником</h2>`;
   for (const it of kws) {
@@ -863,7 +969,7 @@ function render() {
   nb.hidden = !cnt;
   nb.textContent = cnt;
   const nd = $('#badgeD');
-  const cd = decList().filter((d) => d.unread).length;
+  const cd = decList().filter((d) => d.unread).length + esList().filter((x) => x.unread).length;
   nd.hidden = !cd;
   nd.textContent = cd;
 }
@@ -957,6 +1063,10 @@ function openItem(id) {
       ${past.length ? `<h2>Історія засідань (${past.length})</h2>${past.map(hc).join('')}` : ''}
       <h2>Судові рішення${decs.length ? ` (${decs.length})` : ''}</h2>${decs.length ? decs.map((d) => decCard(d, { noTitle: true })).join('') : `<p class="note">У реєстрі немає рішень у цій справі${S.decMeta ? ` з ${h(fmtD(S.decMeta.from))}` : ''}.</p>`}
       <div class="btns"><a class="btn sec sm" href="https://court.gov.ua/fair/" target="_blank" rel="noopener" data-act="copy" data-text="${h(it.number)}">Стан розгляду на court.gov.ua (номер буде скопійовано)</a></div>
+      ${esOf(it) ? `<h2>Електронний суд</h2><div class="card"><div class="t">Останній документ: ${h(fmtD(esOf(it).last))} ${esUnread(it) ? '<span class="tag new">нове</span>' : ''}</div>
+        <div class="m">Перший документ: ${h(fmtD(esOf(it).first))}${esOf(it).role ? ` · ${h(esOf(it).role)}` : ''}</div>
+        <div class="m">Дані кабінету станом на ${h(fmtDT(S.esud.at))}</div>
+        <div class="btns"><a class="btn sec sm" href="https://cabinet.court.gov.ua/cases" target="_blank" rel="noopener" data-act="copy" data-text="${h(it.number)}">Відкрити Електронний суд</a>${esUnread(it) ? `<button class="btn ghost sm" data-act="es-read" data-id="${h(it.id)}">Прочитано</button>` : ''}</div></div>` : ''}
       <h2>Стан розгляду</h2>${stan}${stanNote}
       ${(last && last.involved) || cardParts ? `<h2>Учасники</h2><div class="card m">${h((last && last.involved) || cardParts)}</div>` : ''}
       ${last && last.judges ? `<h2>Склад суду</h2><div class="card m">${h(last.judges)}</div>` : ''}
@@ -1227,6 +1337,22 @@ document.addEventListener('click', async (e) => {
       if ($('#dlg').open && S.openId) openItem(S.openId);
       else render();
     }, a === 'dec-open' ? 400 : 0);
+  } else if (a === 'es-missing') openEsMissing();
+  else if (a === 'es-add') {
+    esAdd([el.dataset.k]);
+    openEsMissing();
+    toast('Справу додано. Дані завантажаться під час оновлення.');
+  } else if (a === 'es-add-all') {
+    const n = esAdd(esMissing().map((x) => x.k));
+    closeDlg();
+    toast(`Додано справ: ${n}`);
+    cardsSoon();
+    refreshAll({ force: true });
+  } else if (a === 'es-read') {
+    const it = S.items.find((i) => i.id === el.dataset.id);
+    if (it) esMark(it);
+    if ($('#dlg').open && S.openId) openItem(S.openId);
+    else render();
   } else if (a === 'dec-all') markAllRead();
   else if (a === 'import') openImport();
   else if (a === 'imp-scan') importScan();
