@@ -146,3 +146,17 @@ body::before { content: ''; position: fixed; top: 0; left: 0; right: 0; z-index:
 .card.busy .time { color: #2e8b57; }
 .tag.busy { background: #d9f0e3; color: #1d5c3a; }
 @media (prefers-color-scheme: dark) { .tag.busy { background: #1f4a35; color: #c9efd9; } }
+
+/* Розділ «Документи» */
+.card.doc.closed { opacity: .72; }
+.card.doc .act { color: var(--ink); }
+.tag.due { background: #fde7cf; color: #8a3d00; }
+/* Шість розділів у нижній панелі телефона */
+#nav button { min-width: 0; }
+#nav button span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 699px) { #nav button { font-size: 10.5px; padding-left: 0; padding-right: 0; } }
+@media (max-width: 380px) { #nav button { font-size: 9.5px; } #nav svg { width: 22px; height: 22px; } }
+@media (max-width: 420px) {
+  #nav button[data-view=settings] span { font-size: 0; }
+  #nav button[data-view=settings] span::after { content: 'Налашт.'; font-size: 10.5px; }
+}

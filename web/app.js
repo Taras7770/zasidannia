@@ -1,7 +1,7 @@
 import {
   DataClient, normCase, normText, tokenize, kyivDate, kyivToday, kyivNowIso, hearingUid, hash32,
   mergeItems, sameItems, utf8ToB64, b64ToUtf8, buildIcs, extractCaseNumbers, fileToText,
-  caseBase, mergeRead, reviewUrl,
+  caseBase, mergeRead, reviewUrl, mergeMarks, docStatus, docDue,
 } from './core.js';
 
 // ---------- Сховище ----------
@@ -28,7 +28,7 @@ const S = {
   seen: new Set(LS.get('ct.seen', [])),
   fresh: new Set(LS.get('ct.new', [])),
   init: new Set(LS.get('ct.init', [])),
-  set: Object.assign({ repo: '', token: '', r1d: true, r1h: true, sort: 'next' }, LS.get('ct.set', {})),
+  set: Object.assign({ repo: '', token: '', r1d: true, r1h: true, rdoc: true, sort: 'next' }, LS.get('ct.set', {})),
   dec: LS.get('ct.dec', {}),
   rd: Object.assign({ ra: '', read: {} }, LS.get('ct.rd', {})),
   decMeta: LS.get('ct.decmeta', null),
@@ -39,6 +39,9 @@ const S = {
   busyData: LS.get('ct.busy', null),
   es: Object.assign({ b: '', seen: {} }, LS.get('ct.es', {})),
   cards: LS.get('ct.cards', null),
+  docs: LS.get('ct.docs', null),
+  dm: LS.get('ct.dm', {}),
+  dfilter: 'open',
   meta: LS.get('ct.meta', null),
   view: 'agenda',
   busy: false,
@@ -58,6 +61,7 @@ const save = () => {
   LS.set('ct.rd', S.rd);
   LS.set('ct.mh', S.mh);
   LS.set('ct.es', S.es);
+  LS.set('ct.dm', S.dm);
 };
 const active = () => S.items.filter((i) => !i.del);
 // Справи поза архівом: лише вони оновлюються і дають нагадування
@@ -212,13 +216,16 @@ async function syncNow() {
         const mh = mergeItems(S.mh, remoteMh);
         const remoteEs = { b: (st.data && st.data.es && st.data.es.b) || '', seen: (st.data && st.data.es && st.data.es.seen) || {} };
         const es = mergeEs(S.es, remoteEs);
+        const remoteDm = mergeMarks((st.data && st.data.dm) || {}, null);
+        const dm = mergeMarks(S.dm, remoteDm);
+        S.dm = dm;
         S.es = es;
         S.items = merged;
         S.rd = rd;
         S.mh = mh;
         save();
         const ok1 = (sameItems(merged, remoteItems) && !legacy) || (await ghPutJson('watch.json', { v: 1, items: merged }, w.sha, 'Оновлення списку справ'));
-        const ok2 = (sameItems(rd, remoteRd) && sameItems(mh, remoteMh) && sameItems(es, remoteEs)) || (await ghPutJson('state.json', { v: 1, ra: rd.ra, read: rd.read, mh, es }, st.sha, 'Позначки прочитання і ручні засідання'));
+        const ok2 = (sameItems(rd, remoteRd) && sameItems(mh, remoteMh) && sameItems(es, remoteEs) && sameItems(dm, (st.data && st.data.dm) || {})) || (await ghPutJson('state.json', { v: 1, ra: rd.ra, read: rd.read, mh, es, dm }, st.sha, 'Позначки прочитання і ручні засідання'));
         if (ok1 && ok2) break;
       }
       S.sync = 'ok:' + Date.now();
@@ -349,6 +356,146 @@ function esCard(x) {
     ${x.unread ? `<button class="btn ghost sm" data-act="es-read" data-id="${h(it.id)}">Прочитано</button>` : ''}</div></div>`;
 }
 
+// ---------- Документи (docs.json у приватному репозиторії) ----------
+// Файл веде помічник: документи, що надійшли у справах, потрібна дія і дата реагування.
+// Запис: {id, recv, case, vp (номер виконавчого провадження), proc, court, name, from, kind ('act'|'info'), act, due, dk ('p' строк | 'c' контрольна дата), dueNote, note, link, draft}.
+// Позначки користувача (виконано, власна дата, нотатка) лежать у state.json (dm) і синхронізуються.
+async function loadDocs() {
+  if (!syncOn()) return;
+  try {
+    const r = await fetch(ghUrl('docs.json') + `?t=${Date.now()}`, { headers: { ...ghHeaders(), Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (j && Array.isArray(j.docs)) {
+      S.docs = { at: j.at || '', docs: j.docs };
+      LS.set('ct.docs', S.docs);
+    }
+  } catch { /* спробуємо під час наступного оновлення */ }
+}
+const safeUrl = (u) => (/^https:\/\/[^\s"'<>]+$/.test(u || '') ? u : '');
+const fmtRecv = (r) => (!r ? '' : r.length > 10 ? fmtDT(r) : fmtD(r));
+function docList() {
+  if (!S.docs) return [];
+  const byCase = new Map(active().filter((i) => i.t === 'case').map((i) => [esKey(i.number), i]));
+  const today = kyivToday();
+  return S.docs.docs.filter((d) => d && d.id).map((d) => {
+    const mark = S.dm[d.id] || null;
+    const due = docDue(d, mark);
+    return {
+      ...d, mark, st: docStatus(d, mark), dueD: due ? due.date : '', dueK: due ? due.kind : '',
+      left: due ? dayDiff(due.date, today) : null, item: (d.case && byCase.get(esKey(d.case))) || null,
+    };
+  });
+}
+const byRecv = (a, b) => (a.recv < b.recv ? 1 : a.recv > b.recv ? -1 : 0);
+// У роботі: спочатку документи з датою (найближча зверху), потім без дати (новіші зверху)
+const docsOpen = () => docList().filter((d) => d.st === 'open')
+  .sort((a, b) => (a.dueD && b.dueD ? a.dueD.localeCompare(b.dueD) || byRecv(a, b) : a.dueD ? -1 : b.dueD ? 1 : byRecv(a, b)));
+function setMark(id, patch) {
+  S.dm[id] = { s: '', due: '', note: '', ...(S.dm[id] || {}), ...patch, u: Date.now() };
+  save();
+  syncSoon();
+  scheduleReminders();
+}
+function dueLine(d) {
+  if (!d.dueD) return '<div class="m">Дату реагування не визначено</div>';
+  const n = d.left;
+  const rel = n < 0 ? `прострочено на ${-n} дн.` : n === 0 ? 'сьогодні' : n === 1 ? 'завтра' : `через ${n} дн.`;
+  const label = d.dueK === 'p' ? 'Строк' : d.dueK === 'u' ? 'Моя дата' : 'Контрольна дата';
+  return `<div class="m">${label}: <b>${h(fmtD(d.dueD))}</b> · ${rel}</div>`;
+}
+function docCard(d, opts = {}) {
+  const open = d.st === 'open';
+  const late = open && d.left != null && d.left < 0;
+  const soon = open && d.left != null && d.left >= 0 && d.left <= 1;
+  const title = d.item ? itemTitle(d.item) : '';
+  const link = safeUrl(d.link);
+  return `<div class="card doc${late ? ' unread' : ''}${open ? '' : ' closed'}">
+    <div class="t">${h(d.name || 'Документ')} ${late ? '<span class="tag new">прострочено</span>' : soon ? `<span class="tag due">${d.left === 0 ? 'сьогодні' : 'завтра'}</span>` : ''}${d.st === 'done' ? '<span class="tag">виконано</span>' : d.st === 'skip' ? '<span class="tag past">без реакції</span>' : d.st === 'info' ? '<span class="tag past">довідково</span>' : ''}</div>
+    ${opts.noTitle || !title ? '' : `<div class="m"><b>${h(title)}</b></div>`}
+    <div class="m">${d.case ? `№ ${h(d.case)}` : d.vp ? `Виконавче провадження № ${h(d.vp)}` : 'Номер справи не визначено'}${d.court ? ` · ${h(d.court)}` : ''}</div>
+    <div class="m">${d.from ? `Від: ${h(d.from)} · ` : ''}надійшов ${h(fmtRecv(d.recv))}</div>
+    ${d.act && d.st !== 'info' ? `<div class="m act">Потрібно: <b>${h(d.act)}</b></div>` : ''}
+    ${open ? dueLine(d) : ''}
+    <div class="btns">${open ? `<button class="btn sm" data-act="doc-done" data-id="${h(d.id)}">Виконано</button>` : ''}<button class="btn sec sm" data-act="doc-open" data-id="${h(d.id)}">Деталі</button>${link ? `<a class="btn ghost sm" href="${h(link)}" target="_blank" rel="noopener">Е-суд</a>` : ''}</div></div>`;
+}
+function viewDocs() {
+  let out = `<div class="head"><h1>Документи</h1><button class="btn sec sm" data-act="refresh" ${S.busy ? 'disabled' : ''}>Оновити</button></div>`;
+  if (!syncOn()) return out + `<div class="empty"><b>Розділ ще не працює</b>Спочатку налаштуйте синхронізацію в розділі «Налаштування».</div>`;
+  if (!S.docs) return out + `<div class="empty"><b>Даних ще немає</b>Застосунок завантажить реєстр документів під час наступного оновлення.</div>`;
+  const all = docList();
+  const open = docsOpen();
+  const closed = all.filter((d) => d.st === 'done' || d.st === 'skip').sort(byRecv);
+  const f = S.dfilter;
+  out += `<p class="sub">Реєстр веде помічник за листами Електронного суду. Дані станом на ${h(fmtRecv(S.docs.at))}. Строки перевіряйте за ухвалою суду.</p>
+    <div class="seg"><button data-act="dfilter" data-f="open" class="${f === 'open' ? 'on' : ''}">У роботі (${open.length})</button><button data-act="dfilter" data-f="all" class="${f === 'all' ? 'on' : ''}">Усі (${all.length})</button><button data-act="dfilter" data-f="closed" class="${f === 'closed' ? 'on' : ''}">Закриті (${closed.length})</button></div>`;
+  if (f === 'open') {
+    if (!open.length) return out + `<div class="empty"><b>Документів у роботі немає</b>Нові документи зʼявляться тут після перевірки пошти.</div>`;
+    const late = open.filter((d) => d.left != null && d.left < 0).length;
+    if (late) out += `<p class="note badc">Увага: прострочених дат: ${late}.</p>`;
+    const dated = open.filter((d) => d.dueD);
+    const rest = open.filter((d) => !d.dueD);
+    if (dated.length) out += `<h2>З датою реагування (${dated.length})</h2>` + dated.map((d) => docCard(d)).join('');
+    if (rest.length) out += `<h2>Без дати (${rest.length})</h2>` + rest.map((d) => docCard(d)).join('');
+    return out;
+  }
+  const list = f === 'closed' ? closed : all.slice().sort(byRecv);
+  if (!list.length) return out + `<div class="empty"><b>Список порожній</b></div>`;
+  return out + list.slice(0, 200).map((d) => docCard(d)).join('') + (list.length > 200 ? '<p class="note">Показано останні 200 документів.</p>' : '');
+}
+function openDoc(id) {
+  const d = docList().find((x) => x.id === id);
+  if (!d) return;
+  const open = d.st === 'open';
+  const m = d.mark || {};
+  const link = safeUrl(d.link);
+  const draft = safeUrl(d.draft);
+  $('#dlgBody').innerHTML = `<div class="dh"><h1>${h(d.name || 'Документ')}</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
+    ${d.item ? `<div class="m"><b>${h(itemTitle(d.item))}</b></div>` : ''}
+    <div class="m">${d.case ? `Справа № ${h(d.case)} <button class="btn ghost sm" data-act="copy" data-text="${h(d.case)}">копіювати</button>` : d.vp ? `Виконавче провадження № ${h(d.vp)} <button class="btn ghost sm" data-act="copy" data-text="${h(d.vp)}">копіювати</button>` : 'Номер справи не визначено'}</div>
+    ${d.proc ? `<div class="m">Провадження № ${h(d.proc)}</div>` : ''}
+    ${d.court ? `<div class="m">${h(d.court)}</div>` : ''}
+    <div class="m">${d.from ? `Від: ${h(d.from)} · ` : ''}надійшов ${h(fmtRecv(d.recv))}</div>
+    <h2>Що потрібно</h2>
+    <div class="card"><div class="t">${h(d.act || 'Реакція не потрібна')} ${d.st === 'done' ? '<span class="tag">виконано</span>' : d.st === 'skip' ? '<span class="tag past">без реакції</span>' : ''}</div>
+      ${d.act || d.dueD ? dueLine(d) : ''}
+      ${d.dueNote ? `<div class="m">${h(d.dueNote)}</div>` : ''}
+      ${d.note ? `<div class="m">${h(d.note)}</div>` : ''}
+      ${draft ? `<div class="btns"><a class="btn sec sm" href="${h(draft)}" target="_blank" rel="noopener">Проєкт відповіді</a></div>` : d.draft ? `<div class="m">Проєкт відповіді: ${h(d.draft)}</div>` : ''}</div>
+    <label for="docDue">Моя дата реагування</label>
+    <div class="row"><input type="date" id="docDue" data-doc="${h(d.id)}" data-field="due" value="${h(m.due || '')}"></div>
+    <p class="note">Ваша дата замінює дату помічника. Очистіть поле, щоб повернути дату помічника.</p>
+    <label for="docNote">Моя нотатка</label>
+    <textarea id="docNote" rows="2" data-doc="${h(d.id)}" data-field="note">${h(m.note || '')}</textarea>
+    <div class="btns">${open ? `<button class="btn" data-act="doc-done" data-id="${h(d.id)}">Виконано</button><button class="btn sec" data-act="doc-skip" data-id="${h(d.id)}">Не потребує реакції</button>`
+    : `<button class="btn sec" data-act="doc-reopen" data-id="${h(d.id)}">${d.st === 'info' ? 'Взяти в роботу' : 'Повернути в роботу'}</button>`}
+      ${link ? `<a class="btn sec" href="${h(link)}" target="_blank" rel="noopener">Відкрити в Електронному суді</a>` : ''}
+      ${d.item ? `<button class="btn sec" data-act="open" data-id="${h(d.item.id)}">Відкрити справу</button>` : d.case ? `<button class="btn sec" data-act="watch-case" data-case="${h(d.case)}">Стежити за справою</button>` : ''}</div>
+    <button class="btn wide" data-act="close">Закрити</button>`;
+  S.openId = null;
+  showDlg();
+}
+// Нові документи з часу попередньої перевірки на цьому пристрої. Перше завантаження сповіщень не дає.
+function checkDocs() {
+  if (!S.docs) return [];
+  const prev = LS.get('ct.dseen', null);
+  const seen = new Set(prev || []);
+  const notices = [];
+  for (const d of docList()) {
+    if (seen.has(d.id)) continue;
+    seen.add(d.id);
+    if (prev && d.st === 'open') {
+      notices.push({
+        id: hash32(`docnew|${d.id}`) & 0x7fffffff,
+        title: `Надійшов документ: ${d.name || 'документ'}`,
+        body: `${d.item ? itemTitle(d.item) + '\n' : ''}${d.case ? `№ ${d.case}. ` : d.vp ? `ВП № ${d.vp}. ` : ''}${d.act ? `Потрібно: ${d.act}.` : ''}${d.dueD ? ` Дата: ${fmtD(d.dueD)}.` : ''}`,
+      });
+    }
+  }
+  LS.set('ct.dseen', [...seen].slice(-3000));
+  return notices.slice(0, 6);
+}
+
 // ---------- Стан розгляду справ (cards.json у приватному репозиторії) ----------
 async function loadCards() {
   if (!syncOn()) return;
@@ -422,6 +569,8 @@ async function refreshAll(opts = {}) {
     loadCards().then(softRender);
     loadEsud().then(softRender);
     loadBusy().then(softRender);
+    const pDocs = loadDocs();
+    pDocs.then(softRender);
     S.meta = await dc.meta(true);
     LS.set('ct.meta', { built: S.meta.built, sourceModified: S.meta.sourceModified, rows: S.meta.rows, to: S.meta.to });
     const list = live();
@@ -449,7 +598,8 @@ async function refreshAll(opts = {}) {
     softRender();
     await refreshDecisions();
     save();
-    const notices = checkManual();
+    await pDocs;
+    const notices = checkManual().concat(checkDocs());
     await scheduleReminders();
     await notifyNow(notices);
   } catch (e) {
@@ -715,6 +865,20 @@ function reminderList() {
       }
     }
   }
+  // Дати реагування на документи: за 3 дні, за день і в день строку о 09:00
+  if (S.set.rdoc) {
+    for (const d of docsOpen()) {
+      if (!d.dueD) continue;
+      const what = d.act || d.name || 'документ';
+      const label = d.dueK === 'p' ? 'строк' : 'дата реагування';
+      for (const [days, title] of [[3, `Через 3 дні ${label}: ${what}`], [1, `Завтра ${label}: ${what}`], [0, `Сьогодні ${label}: ${what}`]]) {
+        const at = kyivDate(`${dateMinus(d.dueD, days)}T09:00`).getTime();
+        if (at > now + 20000) {
+          out.push({ id: hash32(`doc|${d.id}|${d.dueD}|${days}`) & 0x7fffffff, at, ch: 'docs', title, body: `${d.name || 'Документ'}\n${d.item ? itemTitle(d.item) + '. ' : ''}${d.case ? `№ ${d.case}. ` : ''}До ${fmtD(d.dueD)}.` });
+        }
+      }
+    }
+  }
   return out.sort((a, b) => a.at - b.at);
 }
 async function scheduleReminders() {
@@ -725,6 +889,7 @@ async function scheduleReminders() {
       S.notif = perm.display;
       if (perm.display !== 'granted') return;
       await LN('createChannel', { id: 'hearings', name: 'Судові засідання', description: 'Нагадування за добу і за годину', importance: 5, visibility: 1, vibration: true });
+      await LN('createChannel', { id: 'docs', name: 'Документи і строки', description: 'Нові документи і дати реагування', importance: 5, visibility: 1, vibration: true });
       const pend = await LN('getPending');
       if (pend.notifications && pend.notifications.length) {
         await LN('cancel', { notifications: pend.notifications.map((n) => ({ id: n.id })) });
@@ -732,7 +897,7 @@ async function scheduleReminders() {
       if (list.length) {
         await LN('schedule', {
           notifications: list.slice(0, 200).map((n) => ({
-            id: n.id, title: n.title, body: n.body, largeBody: n.body, channelId: 'hearings',
+            id: n.id, title: n.title, body: n.body, largeBody: n.body, channelId: n.ch || 'hearings',
             schedule: { at: new Date(n.at).toISOString(), allowWhileIdle: true },
           })),
         });
@@ -905,15 +1070,18 @@ function viewCases() {
   }
   const unreadBy = new Map();
   for (const d of decList()) if (d.unread) unreadBy.set(d.base, (unreadBy.get(d.base) || 0) + 1);
+  const docsBy = new Map();
+  for (const d of docsOpen()) if (d.item) docsBy.set(d.item.id, (docsBy.get(d.item.id) || 0) + 1);
   for (const { it, next, court, st } of sortCases(cases)) {
     const nu = unreadBy.get(caseBase(it.number)) || 0;
+    const nd = docsBy.get(it.id) || 0;
     out += `<button class="card" data-act="open" data-id="${h(it.id)}"><div class="t">${h(itemTitle(it))}</div>
       <div class="m">№ ${h(it.number)}${court ? ` · ${h(court)}` : ''}</div>
       ${arch ? '' : `<div class="m">${it.nh ? 'Засідання не відстежуються' : next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>${next.manual ? ' (вручну)' : ''}` : 'Призначених засідань немає'}</div>`}
       ${st && (st.stage || st.result) ? `<div class="m">Стадія: <b>${h(st.stage || st.result)}</b>${st.sd ? ` (${h(fmtD(st.sd))})` : ''}</div>` : ''}
       ${esOf(it) ? `<div class="m">Е-суд: останній документ ${h(fmtD(esOf(it).last))}</div>` : ''}
       ${it.note ? `<div class="m clamp">${h(it.note)}</div>` : ''}
-      ${nu || esUnread(it) ? `<div style="margin-top:4px">${nu ? `<span class="tag new">нових рішень: ${nu}</span>` : ''}${esUnread(it) ? '<span class="tag new">новий документ в Е-суді</span>' : ''}</div>` : ''}</button>`;
+      ${nu || nd || esUnread(it) ? `<div style="margin-top:4px">${nu ? `<span class="tag new">нових рішень: ${nu}</span>` : ''}${nd ? `<span class="tag due">документів у роботі: ${nd}</span>` : ''}${esUnread(it) ? '<span class="tag new">новий документ в Е-суді</span>' : ''}</div>` : ''}</button>`;
   }
   if (kws.length) out += `<h2>Запити за учасником або представником</h2>`;
   for (const it of kws) {
@@ -1000,6 +1168,7 @@ function viewSettings() {
     <div>${nOk ? `<span class="okc">Увімкнено.</span>${isNative && S.notifCount != null ? ` Заплановано сповіщень: ${S.notifCount}.` : ''}` : S.notif === 'denied' ? '<span class="badc">Заборонено в налаштуваннях пристрою.</span>' : 'Вимкнено.'}</div>
     <label class="chk"><input type="checkbox" data-set="r1d" ${st.r1d ? 'checked' : ''}> За добу до засідання</label>
     <label class="chk"><input type="checkbox" data-set="r1h" ${st.r1h ? 'checked' : ''}> За годину до засідання</label>
+    <label class="chk"><input type="checkbox" data-set="rdoc" ${st.rdoc ? 'checked' : ''}> Дати реагування на документи: за 3 дні, за день і в день строку о 09:00</label>
     <div class="btns">${nOk ? '' : '<button class="btn" data-act="notif-on">Увімкнути нагадування</button>'}${nOk ? '<button class="btn sec" data-act="notif-test">Перевірити</button>' : ''}</div>
     ${isNative ? '<p class="note">Застосунок планує нагадування під час кожного відкриття. Відкривайте його хоча б раз на кілька днів.</p>'
     : '<p class="note">На компʼютері сповіщення працюють, поки застосунок відкритий. Для надійних нагадувань додайте засідання в Календар (кнопка на сторінці «Засідання»).</p>'}
@@ -1024,7 +1193,7 @@ function viewSettings() {
 }
 function render() {
   const v = S.view;
-  $('#view').innerHTML = v === 'agenda' ? viewAgenda() : v === 'dec' ? viewDecisions() : v === 'cases' ? viewCases() : v === 'search' ? viewSearch() : viewSettings();
+  $('#view').innerHTML = v === 'agenda' ? viewAgenda() : v === 'dec' ? viewDecisions() : v === 'docs' ? viewDocs() : v === 'cases' ? viewCases() : v === 'search' ? viewSearch() : viewSettings();
   document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.view === v));
   const nb = $('#badge');
   const cnt = agenda(0).filter((x) => S.fresh.has(x.uid)).length;
@@ -1034,11 +1203,15 @@ function render() {
   const cd = decList().filter((d) => d.unread).length + esList().filter((x) => x.unread).length;
   nd.hidden = !cd;
   nd.textContent = cd;
+  const nk = $('#badgeK');
+  const ck = docsOpen().length;
+  nk.hidden = !ck;
+  nk.textContent = ck;
 }
 // Перемальовує лише списки. Форми пошуку і налаштувань не чіпає, щоб не збити введення.
 function softRender() {
   if ($('#dlg').open) return;
-  if (S.view === 'agenda' || S.view === 'cases' || S.view === 'dec') render();
+  if (S.view === 'agenda' || S.view === 'cases' || S.view === 'dec' || S.view === 'docs') render();
 }
 function setView(view) {
   if (S.view === 'agenda' && view !== 'agenda' && S.fresh.size) {
@@ -1108,6 +1281,7 @@ function openItem(id) {
     const stanNote = S.cards && cards !== null ? `<p class="note">Дані ДСА про стан розгляду: файли від ${h(fmtD(S.cards.oldest))} до ${h(fmtD(S.cards.newest))}.${S.cards.remaining ? ' База ще наповнюється старішими даними.' : ''}</p>` : '';
     const baseline = it.rb || dateMinus(new Date(it.c || Date.now()).toISOString().slice(0, 10), 7);
     const decs = (S.dec[caseBase(it.number)] || []).map((d) => ({ ...d, unread: !it.arch && isUnread(d, baseline) }));
+    const caseDocs = docList().filter((d) => d.item && d.item.id === it.id).sort(byRecv);
     body = `<div class="dh"><h1>${h(itemTitle(it))}</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
       <div class="m">Справа № ${h(it.number)} <button class="btn ghost sm" data-act="copy" data-text="${h(it.number)}">копіювати</button></div>
       <label>Власна назва справи</label><input type="text" data-item="${h(it.id)}" data-field="title" placeholder="${h(itemTitle({ ...it, title: '' }))}" value="${h(it.title || '')}">
@@ -1125,6 +1299,7 @@ function openItem(id) {
       ${past.length ? `<h2>Історія засідань (${past.length})</h2>${past.map(hc).join('')}` : ''}
       <h2>Судові рішення${decs.length ? ` (${decs.length})` : ''}</h2>${decs.length ? decs.map((d) => decCard(d, { noTitle: true })).join('') : `<p class="note">У реєстрі немає рішень у цій справі${S.decMeta ? ` з ${h(fmtD(S.decMeta.from))}` : ''}.</p>`}
       <div class="btns"><a class="btn sec sm" href="https://court.gov.ua/fair/" target="_blank" rel="noopener" data-act="copy" data-text="${h(it.number)}">Стан розгляду на court.gov.ua (номер буде скопійовано)</a></div>
+      ${caseDocs.length ? `<h2>Документи (${caseDocs.length})</h2>${caseDocs.slice(0, 40).map((d) => docCard(d, { noTitle: true })).join('')}` : ''}
       ${esOf(it) ? `<h2>Електронний суд</h2><div class="card"><div class="t">Останній документ: ${h(fmtD(esOf(it).last))} ${esUnread(it) ? '<span class="tag new">нове</span>' : ''}</div>
         <div class="m">Перший документ: ${h(fmtD(esOf(it).first))}${esOf(it).role ? ` · ${h(esOf(it).role)}` : ''}</div>
         <div class="m">Дані кабінету станом на ${h(fmtDT(S.esud.at))}</div>
@@ -1415,6 +1590,15 @@ document.addEventListener('click', async (e) => {
     if (it) esMark(it);
     if ($('#dlg').open && S.openId) openItem(S.openId);
     else render();
+  } else if (a === 'doc-open') openDoc(el.dataset.id);
+  else if (a === 'doc-done' || a === 'doc-skip' || a === 'doc-reopen') {
+    setMark(el.dataset.id, { s: a === 'doc-done' ? 'done' : a === 'doc-skip' ? 'skip' : 'open' });
+    toast(a === 'doc-done' ? 'Позначено виконаним' : a === 'doc-skip' ? 'Позначено: реакція не потрібна' : 'Документ повернуто в роботу');
+    if ($('#dlg').open) closeDlg();
+    else render();
+  } else if (a === 'dfilter') {
+    S.dfilter = el.dataset.f;
+    render();
   } else if (a === 'dec-all') markAllRead();
   else if (a === 'import') openImport();
   else if (a === 'imp-scan') importScan();
@@ -1454,6 +1638,9 @@ document.addEventListener('change', (e) => {
     if (t.dataset.inv) val = !val;
     updateItem(t.dataset.item, { [t.dataset.field]: val });
     if (['ag', 'rm', 'nh'].includes(t.dataset.field)) scheduleReminders();
+  } else if (t.dataset.doc) {
+    setMark(t.dataset.doc, { [t.dataset.field]: t.value.trim() });
+    if (t.dataset.field === 'due') openDoc(t.dataset.doc);
   }
 });
 $('#dlg').addEventListener('click', (e) => {

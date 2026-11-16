@@ -61,4 +61,19 @@ assert.deepEqual(extractCaseNumbers(await fileToText(new TextEncoder().encode('a
   const mr = mergeRead({ ra: '2026-11-01', read: { 1: today, 2: '2026-10-01' } }, { ra: '2026-10-15', read: { 3: today } });
   assert.equal(mr.ra, '2026-11-01'); assert.deepEqual(Object.keys(mr.read), ['1', '3']);
 }
+// 7. документи: позначки і стани
+{
+  const { mergeMarks, docStatus, docDue } = await import('../web/core.js');
+  const now = Date.now();
+  const mm = mergeMarks({ b: { s: 'done', u: now }, a: { u: now - 5, note: 'x', s: '' } }, { a: { s: 'skip', u: now }, c: { s: 'done', u: 1 }, d: null });
+  assert.deepEqual(Object.keys(mm), ['a', 'b']);
+  assert.deepEqual(mm.a, { s: 'skip', due: '', note: '', u: now });
+  assert.equal(JSON.stringify(mergeMarks(mm, null)), JSON.stringify(mm));
+  assert.equal(docStatus({ kind: 'act' }, null), 'open'); assert.equal(docStatus({ kind: 'info' }, null), 'info');
+  assert.equal(docStatus({ kind: 'info' }, { s: 'open' }), 'open'); assert.equal(docStatus({ kind: 'act' }, { s: 'done' }), 'done'); assert.equal(docStatus({}, { s: 'skip' }), 'skip');
+  assert.deepEqual(docDue({ due: '2026-11-20', dk: 'p' }, null), { date: '2026-11-20', kind: 'p' });
+  assert.deepEqual(docDue({ due: '2026-11-20' }, { due: '' }), { date: '2026-11-20', kind: 'c' });
+  assert.deepEqual(docDue({ due: '2026-11-20', dk: 'p' }, { due: '2026-11-18' }), { date: '2026-11-18', kind: 'u' });
+  assert.equal(docDue({}, null), null);
+}
 console.log('OK');

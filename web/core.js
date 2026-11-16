@@ -315,6 +315,32 @@ export function mergeRead(a, b) {
 }
 export const reviewUrl = (id) => `https://reyestr.court.gov.ua/Review/${id}`;
 
+// ---------- Документи: позначки користувача ----------
+// Позначка: {s: 'done'|'skip'|'open'|'', due: 'РРРР-ММ-ДД', note, u (мс зміни)}. Перемагає пізніша зміна.
+export function mergeMarks(a, b) {
+  const map = {};
+  for (const src of [a, b]) {
+    for (const [id, m] of Object.entries(src || {})) {
+      if (!m || typeof m !== 'object') continue;
+      if (!map[id] || (m.u || 0) > (map[id].u || 0)) map[id] = m;
+    }
+  }
+  const limit = Date.now() - 400 * 864e5;
+  const out = {};
+  for (const k of Object.keys(map).sort()) {
+    const m = map[k];
+    if ((m.u || 0) < limit) continue;
+    out[k] = { s: m.s || '', due: m.due || '', note: m.note || '', u: m.u || 0 };
+  }
+  return out;
+}
+// Стан документа: 'open' (у роботі), 'done' (виконано), 'skip' (реакція не потрібна), 'info' (довідковий)
+export const docStatus = (d, m) =>
+  (m && m.s === 'done' ? 'done' : m && m.s === 'skip' ? 'skip' : m && m.s === 'open' ? 'open' : d.kind === 'info' ? 'info' : 'open');
+// Дата реагування: власна дата користувача ('u'), процесуальний строк ('p') або контрольна дата ('c')
+export const docDue = (d, m) =>
+  (m && m.due ? { date: m.due, kind: 'u' } : d.due ? { date: d.due, kind: d.dk === 'p' ? 'p' : 'c' } : null);
+
 export function utf8ToB64(str) {
   const bytes = new TextEncoder().encode(str);
   let bin = '';
