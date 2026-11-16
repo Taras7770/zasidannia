@@ -344,9 +344,15 @@ function caseStatus(it) {
     code = 'done';
     if (p.inst > 1) label = `Розглянуто, ${INST_NAME[p.inst]}${p.c.result ? `: ${p.c.result}` : ''}`;
   }
-  return { code, label, date: p.d, court: p.c.court };
+  // ДСА давно не оновлювала запис: стадія може не відповідати дійсності
+  const asof = p.c.fd || p.d;
+  if ((code === 'active' || code === 'appeal' || code === 'unknown') && asof && asof < dateMinus(kyivToday(), 365)) {
+    code = 'stale';
+    label = `Остання відома стадія: ${text}`;
+  }
+  return { code, label, date: p.d, court: p.c.court, asof };
 }
-const statusLineOf = (st) => (st ? `<div class="m">Стан: <b>${h(st.label)}</b>${st.date ? ` (${h(fmtD(st.date))})` : ''}${st.code === 'appeal' ? ' <span class="tag due">оскарження</span>' : st.code === 'final' ? ' <span class="tag past">завершено</span>' : ''}</div>` : '');
+const statusLineOf = (st) => (st ? `<div class="m">Стан: <b>${h(st.label)}</b>${st.date ? ` (${h(fmtD(st.date))})` : ''}${st.code === 'appeal' ? ' <span class="tag due">оскарження</span>' : st.code === 'final' ? ' <span class="tag past">завершено</span>' : st.code === 'stale' ? ` <span class="tag past">дані ДСА від ${h(fmtD(st.asof))}</span>` : ''}</div>` : '');
 
 // Справи, які можна перенести в архів: завершені, без засідань і без свіжих подій
 function archCandidates() {
@@ -357,7 +363,7 @@ function archCandidates() {
   for (const it of live()) {
     if (it.t !== 'case') continue;
     const st = caseStatus(it);
-    if (!st || !(st.code === 'final' || st.code === 'done')) continue;
+    if (!st || !(st.code === 'final' || st.code === 'done' || st.code === 'stale')) continue;
     if ((st.code === 'final' && st.date > d30) || (st.code === 'done' && st.date > d90)) continue;
     if (itemHearings(it).some((r) => r.iso >= now)) continue;
     const decs = S.dec[caseBase(it.number)] || [];
@@ -366,7 +372,8 @@ function archCandidates() {
     if (e && e.last > d30) continue;
     out.push({ it, st });
   }
-  return out.sort((a, b) => (a.st.code === b.st.code ? (a.st.date < b.st.date ? -1 : 1) : a.st.code === 'final' ? -1 : 1));
+  const ord = { final: 0, done: 1, stale: 2 };
+  return out.sort((a, b) => ord[a.st.code] - ord[b.st.code] || (a.st.date < b.st.date ? -1 : 1));
 }
 function toArchive(it) {
   S.aw[esKey(it.number)] = kyivToday();
@@ -383,6 +390,7 @@ function openArchCandidates() {
     <p class="note">Це справи без призначених засідань і без нових рішень та документів за останні 30 днів. Архівну справу застосунок перевіряє далі і повідомляє про нові стадії та рішення.</p>
     ${fin.length ? `<h2>Рішення набрало законної сили (${fin.length})</h2><div class="btns"><button class="btn" data-act="ac-all" data-g="final">Усі ${fin.length} в архів</button></div>${fin.map(card).join('')}` : ''}
     ${done.length ? `<h2>Розглянуто понад 90 днів тому (${done.length})</h2><div class="btns"><button class="btn sec" data-act="ac-all" data-g="done">Усі ${done.length} в архів</button></div>${done.map(card).join('')}` : ''}
+    ${list.filter((x) => x.st.code === 'stale').length ? `<h2>Давні дані: понад рік без оновлення (${list.filter((x) => x.st.code === 'stale').length})</h2><p class="note">ДСА не оновлювала ці записи понад рік. Справа, ймовірно, завершена, але перевірте.</p><div class="btns"><button class="btn sec" data-act="ac-all" data-g="stale">Усі ${list.filter((x) => x.st.code === 'stale').length} в архів</button></div>${list.filter((x) => x.st.code === 'stale').map(card).join('')}` : ''}
     ${list.length ? '' : '<p class="note">Зараз таких справ немає.</p>'}
     <button class="btn sec wide" data-act="close">Закрити</button>`;
   S.openId = null;
@@ -1230,7 +1238,7 @@ function viewAgenda() {
   return out;
 }
 const SORTS = [['next', 'за наступним засіданням'], ['title', 'за назвою'], ['number', 'за номером'], ['added', 'за датою додавання'], ['court', 'за судом'], ['dec', 'за останнім рішенням'], ['stage', 'за датою стадії'], ['esud', 'за останнім документом в Е-суді'], ['status', 'за станом розгляду справи']];
-const STATUS_GROUPS = [['appeal', 'Оскарження'], ['active', 'Розглядається'], ['unknown', 'Стан без категорії'], ['done', 'Розглянуто'], ['final', 'Завершено: рішення набрало законної сили'], ['none', 'Немає даних про стан']];
+const STATUS_GROUPS = [['appeal', 'Оскарження'], ['active', 'Розглядається'], ['unknown', 'Стан без категорії'], ['stale', 'Давні дані: остання відома стадія'], ['done', 'Розглянуто'], ['final', 'Завершено: рішення набрало законної сили'], ['none', 'Немає даних про стан']];
 const statusRank = (cs) => STATUS_GROUPS.findIndex((g) => g[0] === (cs ? cs.code : 'none'));
 function sortCases(cases) {
   const now = kyivNowIso();
@@ -1466,6 +1474,7 @@ window.addEventListener('popstate', (e) => {
 });
 
 // ---------- Вікно справи ----------
+const decX = {};
 function openItem(id) {
   const it = S.items.find((i) => i.id === id && !i.del);
   if (!it) return;
@@ -1493,7 +1502,24 @@ function openItem(id) {
           : 'У базі стану розгляду цієї справи ще немає.'}</p>`;
     const stanNote = S.cards && cards !== null ? `<p class="note">Дані ДСА про стан розгляду: файли від ${h(fmtD(S.cards.oldest))} до ${h(fmtD(S.cards.newest))}.${S.cards.remaining ? ' База ще наповнюється старішими даними.' : ''}</p>` : '';
     const baseline = it.rb || dateMinus(new Date(it.c || Date.now()).toISOString().slice(0, 10), 7);
-    const decs = (S.dec[caseBase(it.number)] || []).map((d) => ({ ...d, unread: !it.arch && isUnread(d, baseline) }));
+    // Рішення архівних і щойно доданих справ завантажуємо під час відкриття вікна
+    const dbase = caseBase(it.number);
+    const tracked = dbase in S.dec;
+    if (!tracked && dbase && !(dbase in decX)) {
+      decX[dbase] = null;
+      dc.decisions(dbase).then((rows) => {
+        decX[dbase] = (rows || []).slice(0, 60);
+        if (S.openId === it.id && $('#dlg').open) {
+          const top = $('#dlg').scrollTop;
+          openItem(it.id);
+          $('#dlg').scrollTop = top;
+        }
+      }).catch(() => {
+        delete decX[dbase];
+      });
+    }
+    const decLoading = !tracked && decX[dbase] === null;
+    const decs = ((tracked ? S.dec[dbase] : decX[dbase]) || []).map((d) => ({ ...d, unread: !it.arch && tracked && isUnread(d, baseline) }));
     const caseDocs = docList().filter((d) => d.item && d.item.id === it.id).sort(byRecv);
     body = `<div class="dh"><h1>${h(itemTitle(it))}</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
       <div class="m">Справа № ${h(it.number)} <button class="btn ghost sm" data-act="copy" data-text="${h(it.number)}">копіювати</button></div>
@@ -1510,7 +1536,9 @@ function openItem(id) {
       </form>
       ${hidden.length ? `<p class="note">Ручних записів, які суд уже підтвердив: ${hidden.length}. ${hidden.map((m) => `<button class="btn ghost sm" data-act="mh-del" data-mid="${h(m.id)}">видалити ${h(fmtDT(m.iso))}</button>`).join(' ')}</p>` : ''}
       ${past.length ? `<h2>Історія засідань (${past.length})</h2>${past.map(hc).join('')}` : ''}
-      <h2>Судові рішення${decs.length ? ` (${decs.length})` : ''}</h2>${decs.length ? decs.map((d) => decCard(d, { noTitle: true })).join('') : `<p class="note">У реєстрі немає рішень у цій справі${S.decMeta ? ` з ${h(fmtD(S.decMeta.from))}` : ''}.</p>`}
+      <h2>Судові рішення${decs.length ? ` (${decs.length})` : ''}</h2>${decs.length ? decs.map((d) => decCard(d, { noTitle: true })).join('') : decLoading ? '<p class="note">Завантажую рішення з реєстру…</p>' : `<p class="note">У реєстрі немає рішень у цій справі${S.decMeta ? ` з ${h(fmtD(S.decMeta.from))}` : ''}.</p>`}
+      <p class="note">Застосунок має рішення${S.decMeta ? ` з ${h(fmtD(S.decMeta.from))}` : ''}. Старіші рішення шукайте в реєстрі за номером справи.</p>
+      <div class="btns"><a class="btn sec sm" href="https://reyestr.court.gov.ua/" target="_blank" rel="noopener" data-act="copy" data-text="${h(it.number)}">Пошук у реєстрі (номер буде скопійовано)</a></div>
       <div class="btns"><a class="btn sec sm" href="https://court.gov.ua/fair/" target="_blank" rel="noopener" data-act="copy" data-text="${h(it.number)}">Стан розгляду на court.gov.ua (номер буде скопійовано)</a></div>
       ${caseDocs.length ? `<h2>Документи (${caseDocs.length})</h2>${caseDocs.slice(0, 40).map((d) => docCard(d, { noTitle: true })).join('')}` : ''}
       ${esOf(it) ? `<h2>Електронний суд</h2><div class="card"><div class="t">Останній документ: ${h(fmtD(esOf(it).last))} ${esUnread(it) ? '<span class="tag new">нове</span>' : ''}</div>
