@@ -36,6 +36,7 @@ const S = {
   afilter: 'all',
   mh: LS.get('ct.mh', []),
   esud: LS.get('ct.esud', null),
+  busyData: LS.get('ct.busy', null),
   es: Object.assign({ b: '', seen: {} }, LS.get('ct.es', {})),
   cards: LS.get('ct.cards', null),
   meta: LS.get('ct.meta', null),
@@ -231,6 +232,35 @@ async function syncNow() {
   })();
   return syncBusy;
 }
+// ---------- Зайнятість: пари та інші події (busy.json у приватному репозиторії) ----------
+// Подія: {id, iso, end ('ГГ:ХХ'), title, place, kind}. Події не належать до справ.
+async function loadBusy() {
+  if (!syncOn()) return;
+  try {
+    const r = await fetch(ghUrl('busy.json') + `?t=${Date.now()}`, { headers: { ...ghHeaders(), Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (j && Array.isArray(j.events)) {
+      S.busyData = { at: j.at, events: j.events };
+      LS.set('ct.busy', S.busyData);
+    }
+  } catch { /* спробуємо під час наступного оновлення */ }
+}
+function busyList(includePastHours = 3) {
+  if (!S.busyData) return [];
+  const from = kyivNowIso(Date.now() - includePastHours * 36e5);
+  return S.busyData.events.filter((e) => e && e.iso && e.iso >= from)
+    .map((e) => ({ ...e, busy: true, mine: true, uid: `b|${e.id || e.iso}` }))
+    .sort((a, b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0));
+}
+const minOf = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+function busyCard(x) {
+  return `<div class="card busy"><div class="row"><div class="time">${h(x.iso.slice(11))}${x.end ? `<div class="m">${h(x.end)}</div>` : ''}</div>
+    <div class="grow"><div class="t">${h(x.title || 'Подія')}</div>
+    ${x.place ? `<div class="m">${h(x.place)}</div>` : ''}
+    <div style="margin-top:4px"><span class="tag busy">${h(x.kind || 'пара')}</span>${x.clash ? '<span class="tag new">накладка із засіданням</span>' : ''}</div></div></div></div>`;
+}
+
 // ---------- Електронний суд (esud.json у приватному репозиторії) ----------
 // Файл містить дату останнього документа у кожній справі з кабінету користувача.
 function mergeEs(a, b) {
@@ -391,6 +421,7 @@ async function refreshAll(opts = {}) {
     await syncNow();
     loadCards().then(softRender);
     loadEsud().then(softRender);
+    loadBusy().then(softRender);
     S.meta = await dc.meta(true);
     LS.set('ct.meta', { built: S.meta.built, sourceModified: S.meta.sourceModified, rows: S.meta.rows, to: S.meta.to });
     const list = live();
@@ -648,6 +679,19 @@ function agenda(includePastHours = 3) {
       }
     }
   }
+  // Накладки з парами та іншими подіями: засідання триває умовно 1 годину
+  for (const e of busyList(includePastHours)) {
+    const s0 = minOf(e.iso.slice(11));
+    const e0 = e.end ? minOf(e.end) : s0 + 80;
+    for (const x of mineList) {
+      if (x.iso.slice(0, 10) !== e.iso.slice(0, 10)) continue;
+      const t = minOf(x.iso.slice(11));
+      if (t < e0 && s0 < t + 60) {
+        x.clash = true;
+        x.clashBusy = `${e.kind || 'пара'} ${e.iso.slice(11)}${e.end ? '-' + e.end : ''}`;
+      }
+    }
+  }
   return out;
 }
 const hTitle = (x) => (x.item && x.item.t === 'case' ? itemTitle(x.item) : shortParties(x.involved) || `Справа № ${x.case}`);
@@ -771,18 +815,35 @@ function hearingCard(x, opts = {}) {
     <div class="m">№ ${h(x.case)}${x.room ? ` · зал ${h(x.room)}` : ''}</div>
     <div class="m">${h(x.court)}</div>
     <div class="m clamp">${h(x.desc)}</div>
-    <div style="margin-top:4px">${x.manual ? '<span class="tag man">вручну</span>' : ''}${x.wasManual ? `<span class="tag new">час змінено, вручну було ${h(x.wasManual)}</span>` : ''}${x.clash ? '<span class="tag new">накладка</span>' : ''}${isNew ? '<span class="tag new">нове</span>' : ''}${past ? '<span class="tag past">минуло</span>' : n <= 1 && !opts.noSoon ? `<span class="tag soon">${n === 0 ? 'сьогодні' : 'завтра'}</span>` : ''}${x.item && x.item.t === 'kw' ? `<span class="tag">за запитом: ${h(x.item.query)}</span>` : ''}</div>
+    <div style="margin-top:4px">${x.manual ? '<span class="tag man">вручну</span>' : ''}${x.wasManual ? `<span class="tag new">час змінено, вручну було ${h(x.wasManual)}</span>` : ''}${x.clash ? `<span class="tag new">накладка${x.clashBusy ? `: ${h(x.clashBusy)}` : ''}</span>` : ''}${isNew ? '<span class="tag new">нове</span>' : ''}${past ? '<span class="tag past">минуло</span>' : n <= 1 && !opts.noSoon ? `<span class="tag soon">${n === 0 ? 'сьогодні' : 'завтра'}</span>` : ''}${x.item && x.item.t === 'kw' ? `<span class="tag">за запитом: ${h(x.item.query)}</span>` : ''}</div>
     </div></div></button>`;
 }
 function viewAgenda() {
-  const all = agenda();
-  const hasOthers = all.some((x) => !x.mine);
-  const list = S.afilter === 'mine' && hasOthers ? all.filter((x) => x.mine) : all;
+  const hearings = agenda();
+  const clashIso = new Set(hearings.filter((x) => x.clashBusy).map((x) => x.iso.slice(0, 10)));
+  const busy = busyList().map((e) => {
+    if (!clashIso.has(e.iso.slice(0, 10))) return e;
+    const s0 = minOf(e.iso.slice(11));
+    const e0 = e.end ? minOf(e.end) : s0 + 80;
+    const hit = hearings.some((x) => x.mine && x.iso.slice(0, 10) === e.iso.slice(0, 10) && minOf(x.iso.slice(11)) < e0 && s0 < minOf(x.iso.slice(11)) + 60);
+    return hit ? { ...e, clash: true } : e;
+  });
+  const hasOthers = hearings.some((x) => !x.mine);
+  const hasBusy = busy.length > 0;
+  let f = S.afilter;
+  if ((f === 'mine' && !hasOthers) || (f === 'court' && !hasBusy)) f = 'all';
+  let list = hearings;
+  if (f === 'mine') list = hearings.filter((x) => x.mine);
+  if (f !== 'court') list = list.concat(busy).sort((x, y) => (x.iso < y.iso ? -1 : x.iso > y.iso ? 1 : 0));
   let out = `<div class="head"><h1>Засідання</h1><button class="btn sm" data-act="mh-new">+ Вручну</button><button class="btn sec sm" data-act="refresh" ${S.busy ? 'disabled' : ''}>Оновити</button></div>${statusLine()}`;
-  if (hasOthers) out += `<div class="seg"><button data-act="afilter" data-f="all" class="${S.afilter === 'mine' ? '' : 'on'}">Усі</button><button data-act="afilter" data-f="mine" class="${S.afilter === 'mine' ? 'on' : ''}">Лише мої</button></div>`;
-  const clashes = list.filter((x) => x.clash).length;
+  if (hasOthers || hasBusy) {
+    out += `<div class="seg"><button data-act="afilter" data-f="all" class="${f === 'all' ? 'on' : ''}">Усе</button>
+      ${hasBusy ? `<button data-act="afilter" data-f="court" class="${f === 'court' ? 'on' : ''}">Лише суд</button>` : ''}
+      ${hasOthers ? `<button data-act="afilter" data-f="mine" class="${f === 'mine' ? 'on' : ''}">Лише мої</button>` : ''}</div>`;
+  }
+  const clashes = list.filter((x) => x.clash && !x.busy).length;
   if (clashes) out += `<p class="note badc">Увага: є накладки засідань (${clashes}). Вони позначені у списку.</p>`;
-  if (!active().length) {
+  if (!active().length && !hasBusy) {
     return out + `<div class="empty"><b>Список порожній</b>Додайте справу за номером або запит за учасником чи представником.<div class="btns" style="justify-content:center"><button class="btn" data-act="go-search">Додати справу</button></div></div>`;
   }
   if (!list.length) {
@@ -796,8 +857,9 @@ function viewAgenda() {
       const l = dayLabel(d);
       out += `<div class="day">${h(l.main)} <small>· ${h(l.rel)}</small></div>`;
     }
-    out += hearingCard(x, { noSoon: true, menu: true });
+    out += x.busy ? busyCard(x) : hearingCard(x, { noSoon: true, menu: true });
   }
+  if (S.busyData && S.busyData.at) out += `<p class="note">Розклад пар станом на ${h(fmtDT(S.busyData.at))}.</p>`;
   if (!isNative) out += `<div class="btns"><button class="btn sec" data-act="ics-all">Додати всі засідання в Календар (.ics)</button></div><p class="note">Файл містить нагадування за добу і за годину.</p>`;
   return out;
 }

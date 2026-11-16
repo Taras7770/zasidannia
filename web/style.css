@@ -140,3 +140,9 @@ dialog.sheet #dlgBody > .btn.wide:last-child { position: static; box-shadow: non
 /* Смуга під системним рядком стану: вміст не заходить під годинник і значки */
 body::before { content: ''; position: fixed; top: 0; left: 0; right: 0; z-index: 4; background: var(--bg);
   height: var(--safe-area-inset-top, env(safe-area-inset-top, 0px)); }
+
+/* Пари та інші події поза судом */
+.card.busy { border-left: 4px solid #2e8b57; background: color-mix(in srgb, var(--card) 88%, #2e8b57); }
+.card.busy .time { color: #2e8b57; }
+.tag.busy { background: #d9f0e3; color: #1d5c3a; }
+@media (prefers-color-scheme: dark) { .tag.busy { background: #1f4a35; color: #c9efd9; } }
