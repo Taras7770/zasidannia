@@ -245,14 +245,35 @@ async function syncNow() {
   })();
   return syncBusy;
 }
+// Читає файл даних із приватного репозиторію. Якщо файл не змінився, сервер відповідає «304»
+// без вмісту: застосунок бере збережену копію і не витрачає трафік.
+async function ghRaw(name, have) {
+  const et = LS.get('ct.et', {});
+  const url = ghUrl(name) + `?t=${Date.now()}`;
+  const base = { ...ghHeaders(), Accept: 'application/vnd.github.raw+json' };
+  let r;
+  try {
+    r = await fetch(url, { headers: have && et[name] ? { ...base, 'If-None-Match': et[name] } : base, cache: 'no-store' });
+  } catch {
+    r = await fetch(url, { headers: base, cache: 'no-store' });
+  }
+  if (r.status === 304) return { same: true };
+  if (!r.ok) return { miss: true };
+  const data = await r.json();
+  const tag = r.headers.get('etag');
+  if (tag) {
+    et[name] = tag;
+    LS.set('ct.et', et);
+  }
+  return { data };
+}
+
 // ---------- Зайнятість: пари та інші події (busy.json у приватному репозиторії) ----------
 // Подія: {id, iso, end ('ГГ:ХХ'), title, place, kind}. Події не належать до справ.
 async function loadBusy() {
   if (!syncOn()) return;
   try {
-    const r = await fetch(ghUrl('busy.json') + `?t=${Date.now()}`, { headers: { ...ghHeaders(), Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' });
-    if (!r.ok) return;
-    const j = await r.json();
+    const j = (await ghRaw('busy.json', !!S.busyData)).data;
     if (j && Array.isArray(j.events)) {
       S.busyData = { at: j.at, events: j.events };
       LS.set('ct.busy', S.busyData);
@@ -450,9 +471,7 @@ function mergeEs(a, b) {
 async function loadEsud() {
   if (!syncOn()) return;
   try {
-    const r = await fetch(ghUrl('esud.json') + `?t=${Date.now()}`, { headers: { ...ghHeaders(), Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' });
-    if (!r.ok) return;
-    const j = await r.json();
+    const j = (await ghRaw('esud.json', !!S.esud)).data;
     if (j && j.cases) {
       S.esud = { at: j.at, cases: j.cases };
       LS.set('ct.esud', S.esud);
@@ -682,10 +701,7 @@ function checkDocs() {
 async function loadCards() {
   if (!syncOn()) return;
   try {
-    const r = await fetch(ghUrl('cards.json') + `?t=${Date.now()}`, { headers: { ...ghHeaders(), Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' });
-    if (r.status === 404) return;
-    if (!r.ok) return;
-    const j = await r.json();
+    const j = (await ghRaw('cards.json', !!S.cards)).data;
     if (j && j.cases) {
       S.cards = { newest: j.newest, oldest: j.oldest, remaining: j.remaining, built: j.built, cases: j.cases };
       LS.set('ct.cards', S.cards);
