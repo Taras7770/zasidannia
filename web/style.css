@@ -102,3 +102,24 @@ select { width: 100%; background: var(--card); border: 1px solid var(--line); bo
 @media (prefers-color-scheme: dark) { .tag.man { background: #3a2f5c; color: #d9ccff; } }
 input[type=date], input[type=time] { flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
 .head .btn + .btn { margin-left: 0; }
+/* Вікна підлаштовуються під екран телефону */
+dialog { max-height: calc(100dvh - 40px); max-width: 100vw; }
+#dlgBody { overflow-wrap: anywhere; }
+#dlgBody .btn { max-width: 100%; white-space: normal; text-align: center; }
+#dlgBody .card { min-width: 0; }
+#dlgBody > .btn.wide:last-child { position: sticky; bottom: calc(10px + env(safe-area-inset-bottom)); box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+@media (max-width: 700px) {
+  dialog { width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; }
+  #dlgBody { padding: 0 14px calc(18px + env(safe-area-inset-bottom)); }
+  .dh { position: sticky; top: 0; z-index: 3; background: var(--bg); margin: 0 -14px 8px; padding: calc(12px + env(safe-area-inset-top)) 14px 10px; border-bottom: 1px solid var(--line); }
+  .dh h1 { font-size: 18px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .x { flex: none; width: 44px; height: 44px; border-radius: 22px; }
+}
+@media (max-width: 360px) {
+  body { font-size: 15px; }
+  #view { padding-left: 8px; padding-right: 8px; }
+  .time { font-size: 17px; }
+  .card { padding: 10px; }
+  .head h1 { font-size: 21px; }
+}
+@media (min-width: 400px) and (max-width: 700px) { #dlgBody { padding-left: 18px; padding-right: 18px; } .dh { margin: 0 -18px 8px; padding-left: 18px; padding-right: 18px; } }
