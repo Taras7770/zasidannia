@@ -323,7 +323,9 @@ async function refreshAll(opts = {}) {
     softRender();
     await refreshDecisions();
     save();
+    const notices = checkManual();
     await scheduleReminders();
+    await notifyNow(notices);
   } catch (e) {
     S.err = navigator.onLine === false ? 'Немає звʼязку з інтернетом. Показано збережені дані.' : e.message;
   } finally {
@@ -447,10 +449,61 @@ function itemHearings(it) {
   const card = cardsOf(it)[0];
   const court = rows.length ? rows[rows.length - 1].court : card ? card.court : '';
   for (const m of S.mh) {
-    if (m.del || m.item !== it.id || days.has(m.iso.slice(0, 10))) continue;
+    if (m.del || m.item !== it.id) continue;
+    if (days.has(m.iso.slice(0, 10))) {
+      // суд уже вніс засідання на цей день: показуємо його, а різницю в часі позначаємо
+      const i = rows.findIndex((r) => !r.manual && r.iso.slice(0, 10) === m.iso.slice(0, 10));
+      if (i >= 0 && rows[i].iso !== m.iso) rows[i] = { ...rows[i], wasManual: m.iso.slice(11) };
+      continue;
+    }
     rows.push({ iso: m.iso, case: it.number, court, room: '', judges: '', involved: '', desc: m.note || '', manual: true, mid: m.id });
   }
   return rows.sort((a, b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0));
+}
+// Порівняння ручних записів із даними суду. Повертає сповіщення про інший час.
+function checkManual() {
+  const now = kyivNowIso();
+  const notices = [];
+  let changed = false;
+  for (const m of S.mh) {
+    if (m.del || m.iso < now) continue;
+    const it = S.items.find((i) => i.id === m.item && !i.del);
+    if (!it) continue;
+    const day = m.iso.slice(0, 10);
+    const off = (S.hearings[it.id] || []).filter((r) => r.iso.slice(0, 10) === day);
+    if (!off.length) continue;
+    const r = off.find((x) => x.iso === m.iso) || off[0];
+    if (m.ok === r.iso) continue;
+    m.ok = r.iso;
+    m.u = Date.now();
+    changed = true;
+    if (r.iso !== m.iso) {
+      notices.push({
+        id: hash32(`mh|${m.id}|${r.iso}`) & 0x7fffffff,
+        title: `Суд призначив інший час: ${r.iso.slice(11)} замість ${m.iso.slice(11)}`,
+        body: `${itemTitle(it)}\n№ ${it.number}, ${fmtD(day)}. Вручну було ${m.iso.slice(11)}, суд вніс ${r.iso.slice(11)}.`,
+      });
+    }
+  }
+  if (changed) {
+    save();
+    syncSoon();
+  }
+  return notices;
+}
+async function notifyNow(list) {
+  if (!list.length) return;
+  toast(list[0].title + (list.length > 1 ? ` (і ще ${list.length - 1})` : ''));
+  try {
+    if (isNative) {
+      if (S.notif !== 'granted') return;
+      await LN('schedule', { notifications: list.map((n) => ({ id: n.id, title: n.title, body: n.body, largeBody: n.body, channelId: 'hearings', schedule: { at: new Date(Date.now() + 1500).toISOString(), allowWhileIdle: true } })) });
+    } else if ('Notification' in window && Notification.permission === 'granted') {
+      for (const n of list) new Notification(n.title, { body: n.body, tag: String(n.id) });
+    }
+  } catch (e) {
+    console.warn(e);
+  }
 }
 const rowUid = (r) => (r.manual ? `m|${r.mid}` : hearingUid(r));
 // Засідання за запитом без нагадувань (наприклад, засідання колеги) не є «моїми»
@@ -614,7 +667,7 @@ function hearingCard(x, opts = {}) {
     <div class="m">№ ${h(x.case)}${x.room ? ` · зал ${h(x.room)}` : ''}</div>
     <div class="m">${h(x.court)}</div>
     <div class="m clamp">${h(x.desc)}</div>
-    <div style="margin-top:4px">${x.manual ? '<span class="tag man">вручну</span>' : ''}${x.clash ? '<span class="tag new">накладка</span>' : ''}${isNew ? '<span class="tag new">нове</span>' : ''}${past ? '<span class="tag past">минуло</span>' : n <= 1 && !opts.noSoon ? `<span class="tag soon">${n === 0 ? 'сьогодні' : 'завтра'}</span>` : ''}${x.item && x.item.t === 'kw' ? `<span class="tag">за запитом: ${h(x.item.query)}</span>` : ''}</div>
+    <div style="margin-top:4px">${x.manual ? '<span class="tag man">вручну</span>' : ''}${x.wasManual ? `<span class="tag new">час змінено, вручну було ${h(x.wasManual)}</span>` : ''}${x.clash ? '<span class="tag new">накладка</span>' : ''}${isNew ? '<span class="tag new">нове</span>' : ''}${past ? '<span class="tag past">минуло</span>' : n <= 1 && !opts.noSoon ? `<span class="tag soon">${n === 0 ? 'сьогодні' : 'завтра'}</span>` : ''}${x.item && x.item.t === 'kw' ? `<span class="tag">за запитом: ${h(x.item.query)}</span>` : ''}</div>
     </div></div></button>`;
 }
 function viewAgenda() {
