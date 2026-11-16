@@ -327,10 +327,21 @@ function esMissing() {
 function openEsMissing() {
   const list = esMissing();
   $('#dlgBody').innerHTML = `<div class="dh"><h1>Справи з Електронного суду</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
-    <p class="note">Цих справ немає у вашому списку. Список відсортовано за датою останнього документа.</p>
+    <p class="note">Цих справ немає у вашому списку. Список відсортовано за датою останнього документа. Сторони і стадія взяті з відкритих даних ДСА.</p>
     ${list.length ? `<div class="btns"><button class="btn" data-act="es-add-all">Додати всі (${list.length})</button></div>` : '<p class="note">Усі справи з кабінету вже у списку.</p>'}
-    ${list.map(({ k, e }) => `<div class="card"><div class="row"><div class="grow"><div class="t">№ ${h(e.n)}</div><div class="m">${h(e.court || '')}</div><div class="m">Останній документ: ${h(fmtD(e.last))}</div></div>
-      <button class="btn sec sm" data-act="es-add" data-k="${h(k)}">Додати</button></div></div>`).join('')}
+    ${list.map(({ k, e }) => {
+    const cs = (S.cards && S.cards.cases && S.cards.cases[k]) || [];
+    const parts = (cs.filter((c) => c.parts).sort((x, y) => y.parts.length - x.parts.length)[0] || {}).parts || '';
+    const st = cs.find((c) => c.stage || c.result);
+    const desc = (cs.find((c) => c.desc) || {}).desc || '';
+    return `<div class="card"><div class="row"><div class="grow"><div class="t">${h(shortParties(parts) || `Справа № ${e.n}`)}</div>
+      <div class="m">№ ${h(e.n)} · ${h(e.court || '')}</div>
+      ${desc ? `<div class="m clamp">${h(desc)}</div>` : ''}
+      ${st ? `<div class="m">Стадія: <b>${h(st.stage || st.result)}</b>${st.sd ? ` (${h(fmtD(st.sd))})` : ''}</div>` : ''}
+      <div class="m">Документи в Е-суді: ${h(fmtD(e.first))} - ${h(fmtD(e.last))}</div>
+      ${parts ? `<details class="m"><summary>Усі учасники</summary>${h(parts)}</details>` : ''}</div>
+      <button class="btn sec sm" data-act="es-add" data-k="${h(k)}">Додати</button></div></div>`;
+  }).join('')}
     <button class="btn sec wide" data-act="close">Закрити</button>`;
   S.openId = null;
   showDlg();
