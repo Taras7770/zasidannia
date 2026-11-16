@@ -1229,7 +1229,9 @@ function viewAgenda() {
   if (!isNative) out += `<div class="btns"><button class="btn sec" data-act="ics-all">Додати всі засідання в Календар (.ics)</button></div><p class="note">Файл містить нагадування за добу і за годину.</p>`;
   return out;
 }
-const SORTS = [['next', 'за наступним засіданням'], ['title', 'за назвою'], ['number', 'за номером'], ['added', 'за датою додавання'], ['court', 'за судом'], ['dec', 'за останнім рішенням'], ['stage', 'за датою стадії'], ['esud', 'за останнім документом в Е-суді']];
+const SORTS = [['next', 'за наступним засіданням'], ['title', 'за назвою'], ['number', 'за номером'], ['added', 'за датою додавання'], ['court', 'за судом'], ['dec', 'за останнім рішенням'], ['stage', 'за датою стадії'], ['esud', 'за останнім документом в Е-суді'], ['status', 'за станом справи (групи)']];
+const STATUS_GROUPS = [['appeal', 'Оскарження'], ['active', 'Розглядається'], ['unknown', 'Стан без категорії'], ['done', 'Розглянуто'], ['final', 'Завершено: рішення набрало законної сили'], ['none', 'Немає даних про стан']];
+const statusRank = (cs) => STATUS_GROUPS.findIndex((g) => g[0] === (cs ? cs.code : 'none'));
 function sortCases(cases) {
   const now = kyivNowIso();
   const info = cases.map((it) => {
@@ -1237,7 +1239,7 @@ function sortCases(cases) {
     const decs = S.dec[caseBase(it.number)] || [];
     const cards = cardsOf(it);
     const st = cards.find((c) => c.stage || c.result) || cards[0];
-    return { it, next: rows.find((r) => r.iso >= now), court: rows.length ? rows[rows.length - 1].court : st ? st.court : '', dec: decs.length ? decs[0].recv : '', st };
+    return { it, cs: caseStatus(it), next: rows.find((r) => r.iso >= now), court: rows.length ? rows[rows.length - 1].court : st ? st.court : '', dec: decs.length ? decs[0].recv : '', st };
   });
   const num = (n) => normCase(n).split(/[/-]/).map((x) => (/^\d+$/.test(x) ? x.padStart(7, '0') : x)).join('/');
   const by = {
@@ -1249,6 +1251,7 @@ function sortCases(cases) {
     dec: (a, b) => (b.dec || '').localeCompare(a.dec || ''),
     stage: (a, b) => ((b.st && b.st.sd) || '').localeCompare((a.st && a.st.sd) || ''),
     esud: (a, b) => ((esOf(b.it) || {}).last || '').localeCompare((esOf(a.it) || {}).last || ''),
+    status: (a, b) => statusRank(a.cs) - statusRank(b.cs) || ((a.cs && a.cs.label) || '').localeCompare((b.cs && b.cs.label) || '', 'uk') || ((b.cs && b.cs.date) || '').localeCompare((a.cs && a.cs.date) || ''),
   };
   return info.sort(by[S.set.sort] || by.next);
 }
@@ -1273,13 +1276,19 @@ function viewCases() {
   for (const d of decList()) if (d.unread) unreadBy.set(d.base, (unreadBy.get(d.base) || 0) + 1);
   const docsBy = new Map();
   for (const d of docsOpen()) if (d.item) docsBy.set(d.item.id, (docsBy.get(d.item.id) || 0) + 1);
-  for (const { it, next, court, st } of sortCases(cases)) {
+  const sorted = sortCases(cases);
+  let grp = -1;
+  for (const { it, next, court, cs } of sorted) {
+    if (S.set.sort === 'status' && statusRank(cs) !== grp) {
+      grp = statusRank(cs);
+      out += `<h2>${h(STATUS_GROUPS[grp][1])} (${sorted.filter((x) => statusRank(x.cs) === grp).length})</h2>`;
+    }
     const nu = unreadBy.get(caseBase(it.number)) || 0;
     const nd = docsBy.get(it.id) || 0;
     out += `<button class="card" data-act="open" data-id="${h(it.id)}"><div class="t">${h(itemTitle(it))}</div>
       <div class="m">№ ${h(it.number)}${court ? ` · ${h(court)}` : ''}</div>
       ${arch ? '' : `<div class="m">${it.nh ? 'Засідання не відстежуються' : next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>${next.manual ? ' (вручну)' : ''}` : 'Призначених засідань немає'}</div>`}
-      ${statusLineOf(caseStatus(it))}
+      ${statusLineOf(cs)}
       ${esOf(it) ? `<div class="m">Е-суд: останній документ ${h(fmtD(esOf(it).last))}</div>` : ''}
       ${it.note ? `<div class="m clamp">${h(it.note)}</div>` : ''}
       ${nu || nd || esUnread(it) ? `<div style="margin-top:4px">${nu ? `<span class="tag new">нових рішень: ${nu}</span>` : ''}${nd ? `<span class="tag due">документів у роботі: ${nd}</span>` : ''}${esUnread(it) ? '<span class="tag new">новий документ в Е-суді</span>' : ''}</div>` : ''}</button>`;
