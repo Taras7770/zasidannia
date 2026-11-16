@@ -36,6 +36,8 @@ const S = {
   afilter: 'all',
   mh: LS.get('ct.mh', []),
   esud: LS.get('ct.esud', null),
+  aw: LS.get('ct.aw', {}),
+  decA: LS.get('ct.decA', {}),
   busyData: LS.get('ct.busy', null),
   es: Object.assign({ b: '', seen: {} }, LS.get('ct.es', {})),
   cards: LS.get('ct.cards', null),
@@ -62,6 +64,7 @@ const save = () => {
   LS.set('ct.mh', S.mh);
   LS.set('ct.es', S.es);
   LS.set('ct.dm', S.dm);
+  LS.set('ct.aw', S.aw);
 };
 const active = () => S.items.filter((i) => !i.del);
 // Справи поза архівом: лише вони оновлюються і дають нагадування
@@ -218,6 +221,9 @@ async function syncNow() {
         const es = mergeEs(S.es, remoteEs);
         const remoteDm = mergeMarks((st.data && st.data.dm) || {}, null);
         const dm = mergeMarks(S.dm, remoteDm);
+        const remoteAw = (st.data && st.data.aw) || {};
+        const aw = mergeMax(S.aw, remoteAw);
+        S.aw = aw;
         S.dm = dm;
         S.es = es;
         S.items = merged;
@@ -225,7 +231,7 @@ async function syncNow() {
         S.mh = mh;
         save();
         const ok1 = (sameItems(merged, remoteItems) && !legacy) || (await ghPutJson('watch.json', { v: 1, items: merged }, w.sha, 'Оновлення списку справ'));
-        const ok2 = (sameItems(rd, remoteRd) && sameItems(mh, remoteMh) && sameItems(es, remoteEs) && sameItems(dm, (st.data && st.data.dm) || {})) || (await ghPutJson('state.json', { v: 1, ra: rd.ra, read: rd.read, mh, es, dm }, st.sha, 'Позначки прочитання і ручні засідання'));
+        const ok2 = (sameItems(rd, remoteRd) && sameItems(mh, remoteMh) && sameItems(es, remoteEs) && sameItems(dm, (st.data && st.data.dm) || {}) && sameItems(aw, remoteAw)) || (await ghPutJson('state.json', { v: 1, ra: rd.ra, read: rd.read, mh, es, dm, aw }, st.sha, 'Позначки прочитання і ручні засідання'));
         if (ok1 && ok2) break;
       }
       S.sync = 'ok:' + Date.now();
@@ -266,6 +272,168 @@ function busyCard(x) {
     <div class="grow"><div class="t">${h(x.title || 'Подія')}</div>
     ${x.place ? `<div class="m">${h(x.place)}</div>` : ''}
     <div style="margin-top:4px"><span class="tag busy">${h(x.kind || 'пара')}</span>${x.clash ? '<span class="tag new">накладка із засіданням</span>' : ''}</div></div></div></div>`;
+}
+
+// ---------- Загальний стан справи: усі провадження разом ----------
+const mergeMax = (a, b) => {
+  const out = {};
+  for (const src of [a, b]) for (const [k, d] of Object.entries(src || {})) if (!out[k] || d > out[k]) out[k] = d;
+  return Object.fromEntries(Object.keys(out).sort().map((k) => [k, out[k]]));
+};
+const instOf = (court) => (/касаційн|верховн|велика палата/i.test(court || '') ? 3 : /апеляційн/i.test(court || '') ? 2 : 1);
+const INST_NAME = ['', 'перша інстанція', 'апеляція', 'касація'];
+function recKind(c) {
+  const st = (c.stage || '').toLowerCase();
+  const r = (c.result || '').toLowerCase();
+  if (/подано апеляційну|направлено до апеляційного|подано касаційну|направлено до суду касаційної/.test(st)) return 'filed';
+  if (/набрало законної сили/.test(st) || /^виконання рішення/.test(st)) return 'final';
+  if (/^(розглянуто|повернуто|відмовлено|залишено без розгляду|закрито|направлено за підсудністю)/.test(st)) return 'done';
+  if (st) return 'active';
+  if (/^(залишено без змін|скасовано|змінено|відмовлено|повернуто|провадження у справі закрито|залишено без розгляду|у задоволенні)/.test(r)) return 'done';
+  if (/^(передано для відправки|передано на відправку|відправлено до суду)/.test(r)) return 'done';
+  if (/відкрито кас|витребувано/.test(r)) return 'active';
+  return 'unknown';
+}
+// Повертає {code, label, date, court}. code: appeal (оскарження), active, done, final, unknown
+function caseStatus(it) {
+  const cs = cardsOf(it).filter((c) => c.stage || c.result);
+  if (!cs.length) return null;
+  const recs = cs.map((c) => ({ c, kind: recKind(c), inst: instOf(c.court), d: c.sd || c.reg || c.fd || '' }));
+  recs.sort((a, b) => (a.d < b.d ? 1 : a.d > b.d ? -1 : b.inst - a.inst));
+  const recent = dateMinus(kyivToday(), 180);
+  const rank = (r) => r.inst + (r.kind === 'filed' ? 1 : 0);
+  const live2 = recs.filter((r) => (r.kind === 'active' || r.kind === 'filed') && r.d >= recent)
+    .sort((a, b) => rank(b) - rank(a) || (a.d < b.d ? 1 : -1));
+  // «Подано скаргу» у першій інстанції втрачає силу, якщо вища інстанція вже розглянула справу пізніше
+  const top = recs[0];
+  let p = live2[0] || top;
+  if (p.kind === 'filed' && recs.some((r) => r.inst > p.inst && r.kind !== 'active' && r.kind !== 'unknown' && r.d >= p.d)) p = live2.find((r) => r.kind === 'active') || top;
+  const text = p.c.stage || p.c.result;
+  let code = 'unknown';
+  let label = text;
+  if (p.kind === 'filed') {
+    code = 'appeal';
+    label = `Оскарження: ${text}`;
+  } else if (p.kind === 'active' && p.inst > 1) {
+    code = 'appeal';
+    label = `Оскарження, ${INST_NAME[p.inst]}: ${text}`;
+  } else if (p.kind === 'active') code = 'active';
+  else if (p.kind === 'final') code = 'final';
+  else if (p.kind === 'done') {
+    code = 'done';
+    if (p.inst > 1) label = `Розглянуто, ${INST_NAME[p.inst]}${p.c.result ? `: ${p.c.result}` : ''}`;
+  }
+  return { code, label, date: p.d, court: p.c.court };
+}
+const statusLineOf = (st) => (st ? `<div class="m">Стан: <b>${h(st.label)}</b>${st.date ? ` (${h(fmtD(st.date))})` : ''}${st.code === 'appeal' ? ' <span class="tag due">оскарження</span>' : st.code === 'final' ? ' <span class="tag past">завершено</span>' : ''}</div>` : '');
+
+// Справи, які можна перенести в архів: завершені, без засідань і без свіжих подій
+function archCandidates() {
+  const now = kyivNowIso();
+  const d30 = dateMinus(kyivToday(), 30);
+  const d90 = dateMinus(kyivToday(), 90);
+  const out = [];
+  for (const it of live()) {
+    if (it.t !== 'case') continue;
+    const st = caseStatus(it);
+    if (!st || !(st.code === 'final' || st.code === 'done')) continue;
+    if ((st.code === 'final' && st.date > d30) || (st.code === 'done' && st.date > d90)) continue;
+    if (itemHearings(it).some((r) => r.iso >= now)) continue;
+    const decs = S.dec[caseBase(it.number)] || [];
+    if (decs.some((d) => d.recv > d30)) continue;
+    const e = esOf(it);
+    if (e && e.last > d30) continue;
+    out.push({ it, st });
+  }
+  return out.sort((a, b) => (a.st.code === b.st.code ? (a.st.date < b.st.date ? -1 : 1) : a.st.code === 'final' ? -1 : 1));
+}
+function toArchive(it) {
+  S.aw[esKey(it.number)] = kyivToday();
+  updateItem(it.id, { arch: true });
+}
+function openArchCandidates() {
+  const list = archCandidates();
+  const fin = list.filter((x) => x.st.code === 'final');
+  const done = list.filter((x) => x.st.code === 'done');
+  const card = ({ it, st }) => `<div class="card"><div class="row"><div class="grow"><div class="t">${h(itemTitle(it))}</div>
+    <div class="m">№ ${h(it.number)}${st.court ? ` · ${h(st.court)}` : ''}</div>${statusLineOf(st)}</div>
+    <div class="col"><button class="btn sec sm" data-act="ac-arch" data-id="${h(it.id)}">В архів</button><button class="btn ghost sm" data-act="open" data-id="${h(it.id)}">Відкрити</button></div></div></div>`;
+  $('#dlgBody').innerHTML = `<div class="dh"><h1>Справи для архіву</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
+    <p class="note">Це справи без призначених засідань і без нових рішень та документів за останні 30 днів. Архівну справу застосунок перевіряє далі і повідомляє про нові стадії та рішення.</p>
+    ${fin.length ? `<h2>Рішення набрало законної сили (${fin.length})</h2><div class="btns"><button class="btn" data-act="ac-all" data-g="final">Усі ${fin.length} в архів</button></div>${fin.map(card).join('')}` : ''}
+    ${done.length ? `<h2>Розглянуто понад 90 днів тому (${done.length})</h2><div class="btns"><button class="btn sec" data-act="ac-all" data-g="done">Усі ${done.length} в архів</button></div>${done.map(card).join('')}` : ''}
+    ${list.length ? '' : '<p class="note">Зараз таких справ немає.</p>'}
+    <button class="btn sec wide" data-act="close">Закрити</button>`;
+  S.openId = null;
+  showDlg();
+}
+
+// ---------- Нагляд за архівом: нові стадії, рішення і документи в архівних справах ----------
+const awBase = (it) => S.aw[esKey(it.number)] || new Date(it.u || it.c || Date.now()).toISOString().slice(0, 10);
+function archEvents() {
+  const out = [];
+  for (const it of active()) {
+    if (it.t !== 'case' || !it.arch) continue;
+    const ab = awBase(it);
+    const evs = [];
+    for (const c of cardsOf(it)) {
+      if (c.sd && c.sd > ab && (c.stage || c.result)) evs.push({ k: 'stan', d: c.sd, text: `Нова стадія: ${c.stage || c.result}`, sub: c.court });
+    }
+    for (const d of S.decA[caseBase(it.number)] || []) {
+      if (d.recv > ab) evs.push({ k: 'dec', d: d.recv, text: `${d.form} від ${fmtD(d.adj)}`, sub: d.court, id: d.id });
+    }
+    const e = esOf(it);
+    if (e && e.last > ab) evs.push({ k: 'esud', d: e.last, text: 'Новий документ в Електронному суді', sub: e.court || '' });
+    if (evs.length) out.push({ it, evs: evs.sort((a, b) => (a.d < b.d ? 1 : -1)) });
+  }
+  return out.sort((a, b) => (a.evs[0].d < b.evs[0].d ? 1 : -1));
+}
+function archEventCard(x) {
+  const it = x.it;
+  return `<div class="card unread"><div class="t">${h(itemTitle(it))} <span class="tag past">архів</span></div>
+    <div class="m">№ ${h(it.number)}</div>
+    ${x.evs.slice(0, 4).map((e) => `<div class="m"><b>${h(fmtD(e.d))}</b> · ${h(e.text)}${e.sub ? ` · ${h(e.sub)}` : ''}${e.id ? ` · <a href="${h(reviewUrl(e.id))}" target="_blank" rel="noopener">реєстр</a>` : ''}</div>`).join('')}
+    <div class="btns"><button class="btn sm" data-act="open" data-id="${h(it.id)}">Відкрити справу</button>
+    <button class="btn sec sm" data-act="arch" data-id="${h(it.id)}">Повернути з архіву</button>
+    <button class="btn ghost sm" data-act="aw-read" data-id="${h(it.id)}">Прочитано</button></div></div>`;
+}
+function archNotices() {
+  const sent = new Set(LS.get('ct.awn', []));
+  const out = [];
+  for (const x of archEvents()) {
+    const id = `${esKey(x.it.number)}|${x.evs[0].k}|${x.evs[0].d}`;
+    if (sent.has(id)) continue;
+    sent.add(id);
+    out.push({ id: hash32('aw|' + id) & 0x7fffffff, title: `Архівна справа: ${x.evs[0].text}`, body: `${itemTitle(x.it)}\n№ ${x.it.number}, ${fmtD(x.evs[0].d)}` });
+  }
+  LS.set('ct.awn', [...sent].slice(-600));
+  return out;
+}
+// Рішення в архівних справах перевіряємо раз на 14 днів
+async function refreshArchDecisions() {
+  const last = LS.get('ct.decAat', '');
+  if (last && last > dateMinus(kyivToday(), 14)) return;
+  if (!S.decMeta) return;
+  const bases = [...new Set(active().filter((i) => i.t === 'case' && i.arch).map((i) => caseBase(i.number)).filter(Boolean))];
+  const from = dateMinus(kyivToday(), 200);
+  const next = {};
+  const queue = bases.slice();
+  let failed = 0;
+  await Promise.all(Array.from({ length: Math.min(6, queue.length) }, async () => {
+    while (queue.length) {
+      const b = queue.shift();
+      try {
+        const rows = ((await dc.decisions(b)) || []).filter((d) => d.recv >= from).slice(0, 5);
+        if (rows.length) next[b] = rows;
+      } catch {
+        failed++;
+        if (S.decA[b]) next[b] = S.decA[b];
+      }
+    }
+  }));
+  S.decA = next;
+  LS.set('ct.decA', S.decA);
+  if (failed < bases.length / 4) LS.set('ct.decAat', kyivToday());
 }
 
 // ---------- Електронний суд (esud.json у приватному репозиторії) ----------
@@ -353,6 +521,7 @@ function esAdd(keys, arch) {
   for (const k of keys) {
     const e = S.esud && S.esud.cases[k];
     if (!e) continue;
+    if (arch) S.aw[k] = kyivToday();
     addItem(arch ? { t: 'case', number: caseBase(e.n) || e.n, arch: true } : { t: 'case', number: caseBase(e.n) || e.n });
     n++;
   }
@@ -612,7 +781,8 @@ async function refreshAll(opts = {}) {
     await refreshDecisions();
     save();
     await pDocs;
-    const notices = checkManual().concat(checkDocs());
+    await refreshArchDecisions();
+    const notices = checkManual().concat(checkDocs()).concat(archNotices());
     await scheduleReminders();
     await notifyNow(notices);
   } catch (e) {
@@ -707,6 +877,8 @@ function viewDecisions() {
   const es = esList();
   const esNew = es.filter((x) => x.unread);
   let out = `<div class="head"><h1>Рішення</h1><button class="btn sec sm" data-act="dec-all" ${unread.length || esNew.length ? '' : 'disabled'}>Усі прочитані</button></div>`;
+  const aev = archEvents();
+  if (aev.length) out += `<h2>Архівні справи: нові події (${aev.length})</h2>${aev.map(archEventCard).join('')}`;
   if (S.esud) {
     out += `<h2>Електронний суд: нові документи (${esNew.length})</h2>${esNew.map(esCard).join('')}
       <p class="note">Дані кабінету станом на ${h(fmtDT(S.esud.at))}. ${esNew.length ? '' : 'Нових документів немає. '}Справ із кабінету у списку: ${es.length}.</p>
@@ -1091,7 +1263,7 @@ function viewCases() {
     out += `<button class="card" data-act="open" data-id="${h(it.id)}"><div class="t">${h(itemTitle(it))}</div>
       <div class="m">№ ${h(it.number)}${court ? ` · ${h(court)}` : ''}</div>
       ${arch ? '' : `<div class="m">${it.nh ? 'Засідання не відстежуються' : next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>${next.manual ? ' (вручну)' : ''}` : 'Призначених засідань немає'}</div>`}
-      ${st && (st.stage || st.result) ? `<div class="m">Стадія: <b>${h(st.stage || st.result)}</b>${st.sd ? ` (${h(fmtD(st.sd))})` : ''}</div>` : ''}
+      ${statusLineOf(caseStatus(it))}
       ${esOf(it) ? `<div class="m">Е-суд: останній документ ${h(fmtD(esOf(it).last))}</div>` : ''}
       ${it.note ? `<div class="m clamp">${h(it.note)}</div>` : ''}
       ${nu || nd || esUnread(it) ? `<div style="margin-top:4px">${nu ? `<span class="tag new">нових рішень: ${nu}</span>` : ''}${nd ? `<span class="tag due">документів у роботі: ${nd}</span>` : ''}${esUnread(it) ? '<span class="tag new">новий документ в Е-суді</span>' : ''}</div>` : ''}</button>`;
@@ -1102,7 +1274,10 @@ function viewCases() {
     out += `<button class="card" data-act="open" data-id="${h(it.id)}"><div class="t">${h(it.title || it.query)}</div>
       <div class="m">${it.court ? `Суд: ${h(it.court)} · ` : ''}${arch ? 'в архіві' : `майбутніх засідань: ${rows.length}`}</div></button>`;
   }
-  if (!arch) out += `<div class="btns"><button class="btn sec" data-act="import">Імпорт справ зі старого застосунку</button></div>`;
+  if (!arch) {
+    const nc = archCandidates().length;
+    out += `<div class="btns">${nc ? `<button class="btn sec" data-act="ac-open">Справи для архіву (${nc})</button>` : ''}<button class="btn sec" data-act="import">Імпорт справ зі старого застосунку</button></div>`;
+  }
   return out;
 }
 function groupByCase(rows) {
@@ -1213,7 +1388,7 @@ function render() {
   nb.hidden = !cnt;
   nb.textContent = cnt;
   const nd = $('#badgeD');
-  const cd = decList().filter((d) => d.unread).length + esList().filter((x) => x.unread).length;
+  const cd = decList().filter((d) => d.unread).length + esList().filter((x) => x.unread && !x.item.arch).length + archEvents().length;
   nd.hidden = !cd;
   nd.textContent = cd;
   const nk = $('#badgeK');
@@ -1572,6 +1747,7 @@ document.addEventListener('click', async (e) => {
     const it = S.items.find((i) => i.id === el.dataset.id);
     if (!it) return;
     const toArch = !it.arch;
+    if (toArch) S.aw[esKey(it.number)] = kyivToday();
     updateItem(it.id, { arch: toArch });
     save();
     closeDlg();
@@ -1587,6 +1763,25 @@ document.addEventListener('click', async (e) => {
       if ($('#dlg').open && S.openId) openItem(S.openId);
       else render();
     }, a === 'dec-open' ? 400 : 0);
+  } else if (a === 'ac-open') openArchCandidates();
+  else if (a === 'ac-arch' || a === 'ac-all') {
+    const list = a === 'ac-all' ? archCandidates().filter((x) => x.st.code === el.dataset.g).map((x) => x.it) : [S.items.find((i) => i.id === el.dataset.id)].filter(Boolean);
+    const top = $('#dlg').scrollTop;
+    for (const it of list) toArchive(it);
+    save();
+    scheduleReminders();
+    openArchCandidates();
+    $('#dlg').scrollTop = top;
+    toast(`Перенесено в архів: ${list.length}`);
+  } else if (a === 'aw-read') {
+    const it = S.items.find((i) => i.id === el.dataset.id);
+    if (it) {
+      S.aw[esKey(it.number)] = kyivToday();
+      if (esOf(it)) S.es.seen[esKey(it.number)] = esOf(it).last;
+      save();
+      syncSoon();
+    }
+    render();
   } else if (a === 'es-missing') openEsMissing();
   else if (a === 'es-add') {
     const arch = !!el.dataset.arch;
