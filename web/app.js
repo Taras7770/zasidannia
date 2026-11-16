@@ -608,7 +608,7 @@ function hearingCard(x, opts = {}) {
   const isNew = S.fresh.has(x.uid || rowUid(x));
   const past = x.iso < kyivNowIso();
   const n = dayDiff(x.iso.slice(0, 10));
-  return `<button class="card" data-act="open" data-id="${h(x.item ? x.item.id : '')}" data-case="${h(x.case)}">
+  return `<button class="card" data-act="${opts.menu ? 'hmenu' : 'open'}" data-uid="${h(x.uid || '')}" data-id="${h(x.item ? x.item.id : '')}" data-case="${h(x.case)}">
     <div class="row"><div class="time">${h(x.iso.slice(11))}${opts.date ? `<div class="m">${h(x.iso.slice(8, 10) + '.' + x.iso.slice(5, 7))}</div>` : ''}</div>
     <div class="grow"><div class="t">${h(opts.title ?? hTitle(x))}</div>
     <div class="m">№ ${h(x.case)}${x.room ? ` · зал ${h(x.room)}` : ''}</div>
@@ -639,7 +639,7 @@ function viewAgenda() {
       const l = dayLabel(d);
       out += `<div class="day">${h(l.main)} <small>· ${h(l.rel)}</small></div>`;
     }
-    out += hearingCard(x, { noSoon: true });
+    out += hearingCard(x, { noSoon: true, menu: true });
   }
   if (!isNative) out += `<div class="btns"><button class="btn sec" data-act="ics-all">Додати всі засідання в Календар (.ics)</button></div><p class="note">Файл містить нагадування за добу і за годину.</p>`;
   return out;
@@ -840,8 +840,9 @@ function go(view) {
   else history.pushState({ view }, '');
   setView(view);
 }
-function showDlg() {
+function showDlg(sheet) {
   const d = $('#dlg');
+  d.classList.toggle('sheet', !!sheet);
   if (!d.open) {
     d.showModal();
     history.pushState({ dlg: 1, view: S.view === 'agenda' ? undefined : S.view }, '');
@@ -932,6 +933,39 @@ function closeDlg() {
 }
 
 
+// ---------- Меню засідання (натискання на засідання у розділі «Засідання») ----------
+function openHearingMenu(uid) {
+  const x = agenda().find((y) => y.uid === uid);
+  if (!x) return;
+  const it = x.item;
+  const isCase = it.t === 'case';
+  const d = x.iso.slice(0, 10);
+  let btns = '';
+  if (isCase) {
+    btns += `<button class="mi" data-act="open" data-id="${h(it.id)}"><b>Відкрити справу</b><small>Рішення, стадія, учасники, історія</small></button>
+      <button class="mi" data-act="hm-add"><b>Додати наступне засідання</b><small>Дата, яку суд погодив під час відкладення</small></button>
+      <form data-form="mh" data-id="${h(it.id)}" data-sheet="1" class="card" id="hmForm" hidden>
+        <div class="row"><input type="date" name="d" required min="${h(kyivToday())}" aria-label="Дата"><input type="time" name="t" required value="${h(x.iso.slice(11))}" step="300" aria-label="Час"></div>
+        <input type="text" name="note" maxlength="120" placeholder="Примітка: зал, суддя, що погоджено">
+        <button class="btn wide" style="margin-top:4px">Додати засідання</button>
+      </form>
+      ${x.manual ? `<button class="mi bad" data-act="mh-del" data-mid="${h(x.mid)}"><b>Видалити цей запис</b><small>Засідання введено вручну</small></button>` : ''}
+      <button class="mi" data-act="hm-nh" data-id="${h(it.id)}"><b>Не стежити за засіданнями справи</b><small>Справа залишиться у списку. Рішення надходитимуть.</small></button>`;
+  } else {
+    btns += `<button class="mi" data-act="watch-case" data-case="${h(x.case.split('(')[0])}"><b>Стежити за цією справою</b><small>Додати справу до мого списку</small></button>
+      <button class="mi" data-act="open" data-id="${h(it.id)}"><b>Відкрити запит «${h(it.query)}»</b><small>Усі засідання за цим запитом</small></button>`;
+  }
+  $('#dlgBody').innerHTML = `<div class="dh"><h1>${h(hTitle(x))}</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
+    <div class="m"><b>${h(dayLabel(d).main)}, ${h(x.iso.slice(11))}</b></div>
+    <div class="m">№ ${h(x.case)}${x.room ? ` · зал ${h(x.room)}` : ''}</div>
+    <div class="m">${h(x.court)}</div>
+    ${x.desc ? `<div class="m clamp">${h(x.desc)}</div>` : ''}
+    <div class="menu">${btns}</div>
+    <button class="btn sec wide" data-act="close">Закрити</button>`;
+  S.openId = null;
+  showDlg(true);
+}
+
 // ---------- Нове засідання вручну (з вибором справи) ----------
 function openManual() {
   const cases = live().filter((i) => i.t === 'case').map((it) => ({ it, title: itemTitle(it) }))
@@ -960,7 +994,7 @@ function submitManual(f) {
   const near = agenda(0).filter((x) => x.mine && x.clash && x.iso.slice(0, 10) === iso.slice(0, 10) && normCase(x.case) !== normCase(it.number));
   toast(near.length ? `Додано. Увага: накладка з засіданням о ${near[0].iso.slice(11)}` : 'Засідання додано');
   scheduleReminders();
-  if (f.dataset.id) openItem(it.id);
+  if (f.dataset.id && !f.dataset.sheet) openItem(it.id);
   else closeDlg();
 }
 
@@ -1074,7 +1108,18 @@ document.addEventListener('click', async (e) => {
     scheduleReminders();
     toast('Запис видалено');
     if ($('#dlg').open && S.openId) openItem(S.openId);
+    else if ($('#dlg').open) closeDlg();
     else render();
+  } else if (a === 'hmenu') openHearingMenu(el.dataset.uid);
+  else if (a === 'hm-add') {
+    const f = $('#hmForm');
+    f.hidden = !f.hidden;
+    if (!f.hidden) f.d.focus();
+  } else if (a === 'hm-nh') {
+    updateItem(el.dataset.id, { nh: true });
+    scheduleReminders();
+    closeDlg();
+    toast('Засідання цієї справи більше не показуються. Повернути можна у вікні справи.');
   } else if (a === 'afilter') {
     S.afilter = el.dataset.f;
     render();
