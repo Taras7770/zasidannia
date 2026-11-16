@@ -161,3 +161,5 @@ body::before { content: ''; position: fixed; top: 0; left: 0; right: 0; z-index:
   #nav button[data-view=settings] span::after { content: 'Налашт.'; font-size: 10.5px; }
 }
 details.m summary { cursor: pointer; color: var(--acc2); margin-top: 4px; }
+
+.col { display: flex; flex-direction: column; gap: 6px; flex: none; }

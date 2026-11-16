@@ -300,11 +300,12 @@ const esKey = (n) => caseBase(n) || normCase(n);
 const esOf = (it) => (it && it.t === 'case' && S.esud && S.esud.cases[esKey(it.number)]) || null;
 function esUnread(it) {
   const e = esOf(it);
-  return !!e && !it.arch && !!S.es.b && e.last >= S.es.b && e.last > (S.es.seen[esKey(it.number)] || '');
+  return !!e && !!S.es.b && e.last >= S.es.b && e.last > (S.es.seen[esKey(it.number)] || '');
 }
 function esList() {
   const out = [];
-  for (const it of live()) {
+  // Архівні справи теж беруть участь: новий документ у старій справі є важливим сигналом
+  for (const it of active()) {
     const e = esOf(it);
     if (e) out.push({ item: it, e, unread: esUnread(it) });
   }
@@ -328,7 +329,8 @@ function openEsMissing() {
   const list = esMissing();
   $('#dlgBody').innerHTML = `<div class="dh"><h1>Справи з Електронного суду</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
     <p class="note">Цих справ немає у вашому списку. Список відсортовано за датою останнього документа. Сторони і стадія взяті з відкритих даних ДСА.</p>
-    ${list.length ? `<div class="btns"><button class="btn" data-act="es-add-all">Додати всі (${list.length})</button></div>` : '<p class="note">Усі справи з кабінету вже у списку.</p>'}
+    ${list.length ? `<div class="btns"><button class="btn" data-act="es-add-all">Додати всі (${list.length})</button><button class="btn sec" data-act="es-add-all" data-arch="1">Усі в архів (${list.length})</button></div>
+      <p class="note">«Додати»: застосунок стежить за справою. «В архів»: справа є у застосунку, але не оновлюється і не дає нагадувань. З архіву її можна повернути.</p>` : '<p class="note">Усі справи з кабінету вже у списку.</p>'}
     ${list.map(({ k, e }) => {
     const cs = (S.cards && S.cards.cases && S.cards.cases[k]) || [];
     const parts = (cs.filter((c) => c.parts).sort((x, y) => y.parts.length - x.parts.length)[0] || {}).parts || '';
@@ -340,18 +342,18 @@ function openEsMissing() {
       ${st ? `<div class="m">Стадія: <b>${h(st.stage || st.result)}</b>${st.sd ? ` (${h(fmtD(st.sd))})` : ''}</div>` : ''}
       <div class="m">Документи в Е-суді: ${h(fmtD(e.first))} - ${h(fmtD(e.last))}</div>
       ${parts ? `<details class="m"><summary>Усі учасники</summary>${h(parts)}</details>` : ''}</div>
-      <button class="btn sec sm" data-act="es-add" data-k="${h(k)}">Додати</button></div></div>`;
+      <div class="col"><button class="btn sec sm" data-act="es-add" data-k="${h(k)}">Додати</button><button class="btn ghost sm" data-act="es-add" data-arch="1" data-k="${h(k)}">В архів</button></div></div></div>`;
   }).join('')}
     <button class="btn sec wide" data-act="close">Закрити</button>`;
   S.openId = null;
   showDlg();
 }
-function esAdd(keys) {
+function esAdd(keys, arch) {
   let n = 0;
   for (const k of keys) {
     const e = S.esud && S.esud.cases[k];
     if (!e) continue;
-    addItem({ t: 'case', number: caseBase(e.n) || e.n });
+    addItem(arch ? { t: 'case', number: caseBase(e.n) || e.n, arch: true } : { t: 'case', number: caseBase(e.n) || e.n });
     n++;
   }
   return n;
@@ -359,7 +361,7 @@ function esAdd(keys) {
 function esCard(x) {
   const it = x.item;
   return `<div class="card${x.unread ? ' unread' : ''}">
-    <div class="t">Документ від ${h(fmtD(x.e.last))} ${x.unread ? '<span class="tag new">нове</span>' : ''}</div>
+    <div class="t">Документ від ${h(fmtD(x.e.last))} ${x.unread ? '<span class="tag new">нове</span>' : ''}${it.arch ? '<span class="tag past">справа в архіві</span>' : ''}</div>
     <div class="m"><b>${h(itemTitle(it))}</b></div>
     <div class="m">№ ${h(it.number)}${x.e.court ? ` · ${h(x.e.court)}` : ''}</div>
     <div class="btns"><button class="btn sm" data-act="open" data-id="${h(it.id)}">Відкрити справу</button>
@@ -1587,15 +1589,20 @@ document.addEventListener('click', async (e) => {
     }, a === 'dec-open' ? 400 : 0);
   } else if (a === 'es-missing') openEsMissing();
   else if (a === 'es-add') {
-    esAdd([el.dataset.k]);
+    const arch = !!el.dataset.arch;
+    const top = $('#dlg').scrollTop;
+    esAdd([el.dataset.k], arch);
     openEsMissing();
-    toast('Справу додано. Дані завантажаться під час оновлення.');
+    $('#dlg').scrollTop = top;
+    toast(arch ? 'Справу додано в архів.' : 'Справу додано. Дані завантажаться під час оновлення.');
   } else if (a === 'es-add-all') {
-    const n = esAdd(esMissing().map((x) => x.k));
+    const arch = !!el.dataset.arch;
+    const n = esAdd(esMissing().map((x) => x.k), arch);
     closeDlg();
-    toast(`Додано справ: ${n}`);
+    toast(arch ? `Додано в архів: ${n}` : `Додано справ: ${n}`);
     cardsSoon();
-    refreshAll({ force: true });
+    if (arch) render();
+    else refreshAll({ force: true });
   } else if (a === 'es-read') {
     const it = S.items.find((i) => i.id === el.dataset.id);
     if (it) esMark(it);
