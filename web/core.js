@@ -357,7 +357,7 @@ export function buildIcs(hearings, titleOf) {
   for (const h of hearings) {
     const start = kyivDate(h.iso);
     const end = new Date(start.getTime() + 60 * 60000);
-    const uid = hash32(hearingUid(h)).toString(16) + '-' + h.iso.replace(/\D/g, '');
+    const uid = hash32(h.manual ? `m|${h.mid}` : hearingUid(h)).toString(16) + '-' + h.iso.replace(/\D/g, '');
     L.push('BEGIN:VEVENT', `UID:${uid}@zasidannia`, `DTSTAMP:${stamp}`,
       `DTSTART:${z(start)}`, `DTEND:${z(end)}`,
       fold(`SUMMARY:${esc(`Суд: ${titleOf ? titleOf(h) : h.case}`)}`),

@@ -97,3 +97,8 @@ a.btn { text-decoration: none; display: inline-block; }
 select { width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
 #nav button span { white-space: nowrap; }
 @media (max-width: 380px) { #nav button { font-size: 10.5px; } }
+
+.tag.man { background: #e7e0f7; color: #4b2f8f; }
+@media (prefers-color-scheme: dark) { .tag.man { background: #3a2f5c; color: #d9ccff; } }
+input[type=date], input[type=time] { flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.head .btn + .btn { margin-left: 0; }

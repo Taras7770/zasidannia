@@ -33,6 +33,8 @@ const S = {
   rd: Object.assign({ ra: '', read: {} }, LS.get('ct.rd', {})),
   decMeta: LS.get('ct.decmeta', null),
   cfilter: 'live',
+  afilter: 'all',
+  mh: LS.get('ct.mh', []),
   cards: LS.get('ct.cards', null),
   meta: LS.get('ct.meta', null),
   view: 'agenda',
@@ -51,6 +53,7 @@ const save = () => {
   LS.set('ct.set', S.set);
   LS.set('ct.dec', S.dec);
   LS.set('ct.rd', S.rd);
+  LS.set('ct.mh', S.mh);
 };
 const active = () => S.items.filter((i) => !i.del);
 // Справи поза архівом: лише вони оновлюються і дають нагадування
@@ -201,11 +204,14 @@ async function syncNow() {
         const remoteRd = { ra: (st.data && st.data.ra) || '', read: (st.data && st.data.read) || {} };
         const merged = mergeItems(S.items, remoteItems);
         const rd = mergeRead(mergeRead(S.rd, remoteRd), legacy ? { ra: wd.ra || '', read: wd.read || {} } : null);
+        const remoteMh = (st.data && Array.isArray(st.data.mh) && st.data.mh) || [];
+        const mh = mergeItems(S.mh, remoteMh);
         S.items = merged;
         S.rd = rd;
+        S.mh = mh;
         save();
         const ok1 = (sameItems(merged, remoteItems) && !legacy) || (await ghPutJson('watch.json', { v: 1, items: merged }, w.sha, 'Оновлення списку справ'));
-        const ok2 = sameItems(rd, remoteRd) || (await ghPutJson('state.json', { v: 1, ra: rd.ra, read: rd.read }, st.sha, 'Позначки прочитання'));
+        const ok2 = (sameItems(rd, remoteRd) && sameItems(mh, remoteMh)) || (await ghPutJson('state.json', { v: 1, ra: rd.ra, read: rd.read, mh }, st.sha, 'Позначки прочитання і ручні засідання'));
         if (ok1 && ok2) break;
       }
       S.sync = 'ok:' + Date.now();
@@ -414,14 +420,51 @@ function viewDecisions() {
   return out;
 }
 
+// ---------- Засідання, введені вручну ----------
+// Запис: {id, item (id справи), iso, note, c, u, del}. Синхронізується через state.json.
+function addManual(itemId, iso, note) {
+  const now = Date.now();
+  const m = { id: uid(), item: itemId, iso, note: note || '', c: now, u: now };
+  S.mh.push(m);
+  save();
+  syncSoon();
+  return m;
+}
+function removeManual(id) {
+  const m = S.mh.find((x) => x.id === id);
+  if (!m) return;
+  m.del = true;
+  m.u = Date.now();
+  save();
+  syncSoon();
+}
+// Усі засідання справи: дані суду плюс ручні записи.
+// Ручний запис не показується, коли суд уже вніс засідання на той самий день.
+function itemHearings(it) {
+  const rows = (S.hearings[it.id] || []).slice();
+  if (it.t !== 'case') return rows;
+  const days = new Set(rows.map((r) => r.iso.slice(0, 10)));
+  const card = cardsOf(it)[0];
+  const court = rows.length ? rows[rows.length - 1].court : card ? card.court : '';
+  for (const m of S.mh) {
+    if (m.del || m.item !== it.id || days.has(m.iso.slice(0, 10))) continue;
+    rows.push({ iso: m.iso, case: it.number, court, room: '', judges: '', involved: '', desc: m.note || '', manual: true, mid: m.id });
+  }
+  return rows.sort((a, b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0));
+}
+const rowUid = (r) => (r.manual ? `m|${r.mid}` : hearingUid(r));
+// Засідання за запитом без нагадувань (наприклад, засідання колеги) не є «моїми»
+const isMine = (it) => !(it.t === 'kw' && it.rm === false);
+
 function agenda(includePastHours = 3) {
   const from = kyivNowIso(Date.now() - includePastHours * 36e5);
   const map = new Map();
   for (const it of live()) {
     if (it.t === 'kw' && it.ag === false) continue;
-    for (const r of S.hearings[it.id] || []) {
+    if (it.t === 'case' && it.nh) continue; // стеження за засіданнями цієї справи вимкнено
+    for (const r of itemHearings(it)) {
       if (r.iso < from) continue;
-      const u = hearingUid(r);
+      const u = rowUid(r);
       const prev = map.get(u);
       if (!prev || (prev.item.t === 'kw' && it.t === 'case')) map.set(u, { ...r, uid: u, item: it });
     }
@@ -430,9 +473,25 @@ function agenda(includePastHours = 3) {
   const byCase = new Map(live().filter((i) => i.t === 'case').map((i) => [normCase(i.number), i]));
   const out = [...map.values()].map((x) => {
     const ci = byCase.get(normCase(x.case).split('(')[0]);
-    return ci ? { ...x, item: ci } : x;
-  });
-  return out.sort((a, b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0));
+    const mine = isMine(x.item) || !!ci;
+    return ci ? { ...x, item: ci, mine } : { ...x, mine };
+  }).filter((x) => !(x.item.t === 'case' && x.item.nh));
+  out.sort((a, b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0));
+  // Накладки: два мої засідання одного дня з різницею менше години
+  const mineList = out.filter((x) => x.mine);
+  for (let i = 0; i < mineList.length; i++) {
+    for (let j = i + 1; j < mineList.length; j++) {
+      const a = mineList[i];
+      const b = mineList[j];
+      if (a.iso.slice(0, 10) !== b.iso.slice(0, 10)) break;
+      const diff = Math.abs(kyivDate(a.iso) - kyivDate(b.iso)) / 60000;
+      if (diff < 60 && normCase(a.case) !== normCase(b.case)) {
+        a.clash = true;
+        b.clash = true;
+      }
+    }
+  }
+  return out;
 }
 const hTitle = (x) => (x.item && x.item.t === 'case' ? itemTitle(x.item) : shortParties(x.involved) || `Справа № ${x.case}`);
 
@@ -444,7 +503,7 @@ let webTimers = [];
 function reminderList() {
   const now = Date.now();
   const out = [];
-  for (const x of agenda(0).slice(0, 150)) {
+  for (const x of agenda(0).filter((y) => y.mine).slice(0, 150)) {
     const t = kyivDate(x.iso).getTime();
     const time = x.iso.slice(11);
     const place = x.court + (x.room ? `, зал ${x.room}` : '');
@@ -546,7 +605,7 @@ function statusLine() {
   return `<p class="sub">${s}</p>`;
 }
 function hearingCard(x, opts = {}) {
-  const isNew = S.fresh.has(x.uid || hearingUid(x));
+  const isNew = S.fresh.has(x.uid || rowUid(x));
   const past = x.iso < kyivNowIso();
   const n = dayDiff(x.iso.slice(0, 10));
   return `<button class="card" data-act="open" data-id="${h(x.item ? x.item.id : '')}" data-case="${h(x.case)}">
@@ -555,12 +614,17 @@ function hearingCard(x, opts = {}) {
     <div class="m">№ ${h(x.case)}${x.room ? ` · зал ${h(x.room)}` : ''}</div>
     <div class="m">${h(x.court)}</div>
     <div class="m clamp">${h(x.desc)}</div>
-    <div style="margin-top:4px">${isNew ? '<span class="tag new">нове</span>' : ''}${past ? '<span class="tag past">минуло</span>' : n <= 1 && !opts.noSoon ? `<span class="tag soon">${n === 0 ? 'сьогодні' : 'завтра'}</span>` : ''}${x.item && x.item.t === 'kw' ? `<span class="tag">за запитом: ${h(x.item.query)}</span>` : ''}</div>
+    <div style="margin-top:4px">${x.manual ? '<span class="tag man">вручну</span>' : ''}${x.clash ? '<span class="tag new">накладка</span>' : ''}${isNew ? '<span class="tag new">нове</span>' : ''}${past ? '<span class="tag past">минуло</span>' : n <= 1 && !opts.noSoon ? `<span class="tag soon">${n === 0 ? 'сьогодні' : 'завтра'}</span>` : ''}${x.item && x.item.t === 'kw' ? `<span class="tag">за запитом: ${h(x.item.query)}</span>` : ''}</div>
     </div></div></button>`;
 }
 function viewAgenda() {
-  const list = agenda();
-  let out = `<div class="head"><h1>Засідання</h1><button class="btn sec sm" data-act="refresh" ${S.busy ? 'disabled' : ''}>Оновити</button></div>${statusLine()}`;
+  const all = agenda();
+  const hasOthers = all.some((x) => !x.mine);
+  const list = S.afilter === 'mine' && hasOthers ? all.filter((x) => x.mine) : all;
+  let out = `<div class="head"><h1>Засідання</h1><button class="btn sm" data-act="mh-new">+ Вручну</button><button class="btn sec sm" data-act="refresh" ${S.busy ? 'disabled' : ''}>Оновити</button></div>${statusLine()}`;
+  if (hasOthers) out += `<div class="seg"><button data-act="afilter" data-f="all" class="${S.afilter === 'mine' ? '' : 'on'}">Усі</button><button data-act="afilter" data-f="mine" class="${S.afilter === 'mine' ? 'on' : ''}">Лише мої</button></div>`;
+  const clashes = list.filter((x) => x.clash).length;
+  if (clashes) out += `<p class="note badc">Увага: є накладки засідань (${clashes}). Вони позначені у списку.</p>`;
   if (!active().length) {
     return out + `<div class="empty"><b>Список порожній</b>Додайте справу за номером або запит за учасником чи представником.<div class="btns" style="justify-content:center"><button class="btn" data-act="go-search">Додати справу</button></div></div>`;
   }
@@ -584,7 +648,7 @@ const SORTS = [['next', 'за наступним засіданням'], ['title
 function sortCases(cases) {
   const now = kyivNowIso();
   const info = cases.map((it) => {
-    const rows = S.hearings[it.id] || [];
+    const rows = it.nh ? [] : itemHearings(it);
     const decs = S.dec[caseBase(it.number)] || [];
     const cards = cardsOf(it);
     const st = cards.find((c) => c.stage || c.result) || cards[0];
@@ -625,7 +689,7 @@ function viewCases() {
     const nu = unreadBy.get(caseBase(it.number)) || 0;
     out += `<button class="card" data-act="open" data-id="${h(it.id)}"><div class="t">${h(itemTitle(it))}</div>
       <div class="m">№ ${h(it.number)}${court ? ` · ${h(court)}` : ''}</div>
-      ${arch ? '' : `<div class="m">${next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>` : 'Призначених засідань немає'}</div>`}
+      ${arch ? '' : `<div class="m">${it.nh ? 'Засідання не відстежуються' : next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>${next.manual ? ' (вручну)' : ''}` : 'Призначених засідань немає'}</div>`}
       ${st && (st.stage || st.result) ? `<div class="m">Стадія: <b>${h(st.stage || st.result)}</b>${st.sd ? ` (${h(fmtD(st.sd))})` : ''}</div>` : ''}
       ${it.note ? `<div class="m clamp">${h(it.note)}</div>` : ''}
       ${nu ? `<div style="margin-top:4px"><span class="tag new">нових рішень: ${nu}</span></div>` : ''}</button>`;
@@ -798,9 +862,12 @@ function openItem(id) {
   const it = S.items.find((i) => i.id === id && !i.del);
   if (!it) return;
   const now = kyivNowIso();
-  let rows = S.hearings[it.id] || [];
+  let rows = it.t === 'case' ? itemHearings(it) : S.hearings[it.id] || [];
   let body;
   if (it.t === 'case') {
+    const hc = (r) => hearingCard({ ...r, item: null }, { date: true, title: dayLabel(r.iso.slice(0, 10)).main })
+      + (r.manual ? `<div class="btns" style="margin:-4px 0 12px"><button class="btn danger sm" data-act="mh-del" data-mid="${h(r.mid)}">Видалити цей запис</button></div>` : '');
+    const hidden = S.mh.filter((m) => !m.del && m.item === it.id && !rows.some((r) => r.mid === m.id));
     const fut = rows.filter((r) => r.iso >= now);
     const past = rows.filter((r) => r.iso < now).reverse();
     const last = rows.filter((r) => r.involved).pop() || rows[rows.length - 1];
@@ -823,8 +890,17 @@ function openItem(id) {
       <div class="m">Справа № ${h(it.number)} <button class="btn ghost sm" data-act="copy" data-text="${h(it.number)}">копіювати</button></div>
       <label>Власна назва справи</label><input type="text" data-item="${h(it.id)}" data-field="title" placeholder="${h(itemTitle({ ...it, title: '' }))}" value="${h(it.title || '')}">
       <label>Нотатка</label><textarea rows="2" data-item="${h(it.id)}" data-field="note">${h(it.note || '')}</textarea>
-      <h2>Майбутні засідання</h2>${fut.length ? fut.map((r) => hearingCard({ ...r, item: null }, { date: true, title: dayLabel(r.iso.slice(0, 10)).main })).join('') : '<p class="note">Призначених засідань немає.</p>'}
-      ${past.length ? `<h2>Історія засідань (${past.length})</h2>${past.map((r) => hearingCard({ ...r, item: null }, { date: true, title: dayLabel(r.iso.slice(0, 10)).main })).join('')}` : ''}
+      <label class="chk"><input type="checkbox" data-item="${h(it.id)}" data-field="nh" data-inv="1" ${it.nh ? '' : 'checked'}> Стежити за засіданнями цієї справи</label>
+      <h2>Майбутні засідання</h2>${fut.length ? fut.map(hc).join('') : '<p class="note">Призначених засідань немає.</p>'}
+      <form data-form="mh" data-id="${h(it.id)}" class="card">
+        <div class="t">Додати засідання вручну</div>
+        <div class="row" style="margin-top:8px"><input type="date" name="d" required min="${h(kyivToday())}" aria-label="Дата"><input type="time" name="t" required value="10:00" step="300" aria-label="Час"></div>
+        <input type="text" name="note" maxlength="120" placeholder="Примітка: зал, суддя, що погоджено">
+        <button class="btn sm">Додати</button>
+        <p class="note">Запис зникне зі списку сам, коли суд внесе засідання на той самий день.</p>
+      </form>
+      ${hidden.length ? `<p class="note">Ручних записів, які суд уже підтвердив: ${hidden.length}. ${hidden.map((m) => `<button class="btn ghost sm" data-act="mh-del" data-mid="${h(m.id)}">видалити ${h(fmtDT(m.iso))}</button>`).join(' ')}</p>` : ''}
+      ${past.length ? `<h2>Історія засідань (${past.length})</h2>${past.map(hc).join('')}` : ''}
       <h2>Судові рішення${decs.length ? ` (${decs.length})` : ''}</h2>${decs.length ? decs.map((d) => decCard(d, { noTitle: true })).join('') : `<p class="note">У реєстрі немає рішень у цій справі${S.decMeta ? ` з ${h(fmtD(S.decMeta.from))}` : ''}.</p>`}
       <div class="btns"><a class="btn sec sm" href="https://court.gov.ua/fair/" target="_blank" rel="noopener" data-act="copy" data-text="${h(it.number)}">Стан розгляду на court.gov.ua (номер буде скопійовано)</a></div>
       <h2>Стан розгляду</h2>${stan}${stanNote}
@@ -836,7 +912,9 @@ function openItem(id) {
     const fut = rows.filter((r) => r.iso >= now);
     body = `<div class="dh"><h1>${h(it.query)}</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
       <div class="m">Запит за учасником або представником${it.court ? `. Суд: ${h(it.court)}` : ''}</div>
-      <label class="chk"><input type="checkbox" data-item="${h(it.id)}" data-field="ag" ${it.ag === false ? '' : 'checked'}> Показувати в засіданнях і нагадувати</label>
+      <label class="chk"><input type="checkbox" data-item="${h(it.id)}" data-field="ag" ${it.ag === false ? '' : 'checked'}> Показувати в розділі «Засідання»</label>
+      <label class="chk"><input type="checkbox" data-item="${h(it.id)}" data-field="rm" ${it.rm === false ? '' : 'checked'}> Це мої засідання: нагадувати і перевіряти накладки</label>
+      <p class="note">Для засідань колеги зніміть другу позначку. Тоді вони будуть видні у списку, але без нагадувань.</p>
       <h2>Майбутні засідання (${fut.length})</h2>
       ${fut.length ? fut.slice(0, 100).map((r) => hearingCard({ ...r, item: null }, { date: true }) + `<div class="btns" style="margin:-4px 0 12px"><button class="btn ghost sm" data-act="watch-case" data-case="${h(r.case.split('(')[0])}">Стежити за справою окремо</button></div>`).join('') : '<p class="note">Майбутніх засідань немає.</p>'}
       <div class="btns"><button class="btn sec" data-act="arch" data-id="${h(it.id)}">${it.arch ? 'Повернути з архіву' : 'В архів'}</button><button class="btn danger" data-act="del" data-id="${h(it.id)}">Видалити запит</button></div>
@@ -853,6 +931,38 @@ function closeDlg() {
   else d.close();
 }
 
+
+// ---------- Нове засідання вручну (з вибором справи) ----------
+function openManual() {
+  const cases = live().filter((i) => i.t === 'case').map((it) => ({ it, title: itemTitle(it) }))
+    .sort((a, b) => a.title.localeCompare(b.title, 'uk'));
+  $('#dlgBody').innerHTML = `<div class="dh"><h1>Засідання вручну</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
+    ${cases.length ? `<form data-form="mh">
+      <label for="mhItem">Справа</label>
+      <select id="mhItem" name="item" required>${cases.map(({ it, title }) => `<option value="${h(it.id)}">${h(title.slice(0, 60))} · № ${h(it.number)}</option>`).join('')}</select>
+      <label>Дата і час</label>
+      <div class="row"><input type="date" name="d" required min="${h(kyivToday())}" aria-label="Дата"><input type="time" name="t" required value="10:00" step="300" aria-label="Час"></div>
+      <label>Примітка</label>
+      <input type="text" name="note" maxlength="120" placeholder="Зал, суддя, що погоджено">
+      <button class="btn wide">Додати засідання</button>
+    </form>` : '<p class="note">Спочатку додайте справу до списку.</p>'}
+    <button class="btn sec wide" data-act="close">Закрити</button>`;
+  S.openId = null;
+  showDlg();
+}
+function submitManual(f) {
+  const itemId = f.dataset.id || (f.item && f.item.value);
+  const it = S.items.find((i) => i.id === itemId);
+  if (!it || !f.d.value || !f.t.value) return;
+  const iso = `${f.d.value}T${f.t.value.slice(0, 5)}`;
+  if (it.nh) updateItem(it.id, { nh: false });
+  addManual(it.id, iso, f.note.value.trim());
+  const near = agenda(0).filter((x) => x.mine && x.clash && x.iso.slice(0, 10) === iso.slice(0, 10) && normCase(x.case) !== normCase(it.number));
+  toast(near.length ? `Додано. Увага: накладка з засіданням о ${near[0].iso.slice(11)}` : 'Засідання додано');
+  scheduleReminders();
+  if (f.dataset.id) openItem(it.id);
+  else closeDlg();
+}
 
 // ---------- Імпорт справ ----------
 const IMP = { found: [], src: '' };
@@ -958,6 +1068,17 @@ document.addEventListener('click', async (e) => {
   if (!el) return;
   const a = el.dataset.act;
   if (a === 'refresh') refreshAll();
+  else if (a === 'mh-new') openManual();
+  else if (a === 'mh-del') {
+    removeManual(el.dataset.mid);
+    scheduleReminders();
+    toast('Запис видалено');
+    if ($('#dlg').open && S.openId) openItem(S.openId);
+    else render();
+  } else if (a === 'afilter') {
+    S.afilter = el.dataset.f;
+    render();
+  }
   else if (a === 'go-search') go('search');
   else if (a === 'mode') {
     if (S.search.mode !== el.dataset.mode) S.search.q = '';
@@ -988,7 +1109,7 @@ document.addEventListener('click', async (e) => {
   else if (a === 'ics-item') {
     const it = S.items.find((i) => i.id === el.dataset.id);
     const now = kyivNowIso();
-    downloadIcs((S.hearings[el.dataset.id] || []).filter((r) => r.iso >= now).map((r) => ({ ...r, item: it })), `sprava-${it.number.replace(/\W+/g, '-')}.ics`);
+    downloadIcs(itemHearings(it).filter((r) => r.iso >= now).map((r) => ({ ...r, item: it })), `sprava-${it.number.replace(/\W+/g, '-')}.ics`);
   } else if (a === 'arch') {
     const it = S.items.find((i) => i.id === el.dataset.id);
     if (!it) return;
@@ -1022,6 +1143,12 @@ document.addEventListener('click', async (e) => {
   }
 });
 document.addEventListener('submit', (e) => {
+  const mf = e.target.closest('[data-form=mh]');
+  if (mf) {
+    e.preventDefault();
+    submitManual(mf);
+    return;
+  }
   const f = e.target.closest('[data-form=search]');
   if (!f) return;
   e.preventDefault();
@@ -1037,9 +1164,10 @@ document.addEventListener('change', (e) => {
     if (t.type === 'checkbox') scheduleReminders();
     if (t.dataset.set === 'sort') render();
   } else if (t.dataset.item) {
-    const val = t.type === 'checkbox' ? t.checked : t.value.trim();
+    let val = t.type === 'checkbox' ? t.checked : t.value.trim();
+    if (t.dataset.inv) val = !val;
     updateItem(t.dataset.item, { [t.dataset.field]: val });
-    if (t.dataset.field === 'ag') scheduleReminders();
+    if (['ag', 'rm', 'nh'].includes(t.dataset.field)) scheduleReminders();
   }
 });
 $('#dlg').addEventListener('click', (e) => {
