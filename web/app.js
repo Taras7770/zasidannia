@@ -1229,7 +1229,7 @@ function viewAgenda() {
   if (!isNative) out += `<div class="btns"><button class="btn sec" data-act="ics-all">Додати всі засідання в Календар (.ics)</button></div><p class="note">Файл містить нагадування за добу і за годину.</p>`;
   return out;
 }
-const SORTS = [['next', 'за наступним засіданням'], ['title', 'за назвою'], ['number', 'за номером'], ['added', 'за датою додавання'], ['court', 'за судом'], ['dec', 'за останнім рішенням'], ['stage', 'за датою стадії'], ['esud', 'за останнім документом в Е-суді'], ['status', 'за станом справи (групи)']];
+const SORTS = [['next', 'за наступним засіданням'], ['title', 'за назвою'], ['number', 'за номером'], ['added', 'за датою додавання'], ['court', 'за судом'], ['dec', 'за останнім рішенням'], ['stage', 'за датою стадії'], ['esud', 'за останнім документом в Е-суді'], ['status', 'за станом розгляду справи']];
 const STATUS_GROUPS = [['appeal', 'Оскарження'], ['active', 'Розглядається'], ['unknown', 'Стан без категорії'], ['done', 'Розглянуто'], ['final', 'Завершено: рішення набрало законної сили'], ['none', 'Немає даних про стан']];
 const statusRank = (cs) => STATUS_GROUPS.findIndex((g) => g[0] === (cs ? cs.code : 'none'));
 function sortCases(cases) {
