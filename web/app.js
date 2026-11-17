@@ -1291,15 +1291,40 @@ function viewCases() {
   const arch = S.cfilter === 'arch';
   const all = active();
   const nArch = all.filter((i) => i.arch).length;
-  const shown = all.filter((i) => !!i.arch === arch);
+  const nCases = all.filter((i) => !!i.arch === arch && i.t === 'case').length;
+  let out = `<div class="head"><h1>Справи</h1><button class="btn sm" data-act="go-search">Додати</button></div>
+    <div class="seg"><button data-act="cfilter" data-f="live" class="${arch ? '' : 'on'}">Активні (${all.length - nArch})</button><button data-act="cfilter" data-f="arch" class="${arch ? 'on' : ''}">Архів (${nArch})</button></div>`;
+  if (all.length > 3) {
+    out += `<div class="row" style="align-items:center;gap:8px;margin-bottom:8px"><input type="search" id="caseQ" value="${h(S.cq || '')}" placeholder="Пошук у моїх справах: сторона, суддя, номер" autocomplete="off" enterkeyhint="search" style="margin:0;flex:1" aria-label="Пошук у моїх справах"><button class="btn ghost sm" data-act="cq-clear" aria-label="Очистити пошук">×</button></div>`;
+  }
+  if (nCases > 1 || S.cq) {
+    out += `<label for="sortSel">Сортування</label><select id="sortSel" data-set="sort">${SORTS.map(([v, t]) => `<option value="${v}" ${S.set.sort === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
+  }
+  return out + `<div id="caseList">${caseListHtml()}</div>`;
+}
+// Текст справи для пошуку: номер, назва, нотатка, сторони, судді, суди, суть спору
+function caseHay(it) {
+  const parts = [it.number, it.title, it.note, it.query, it.court, it.t === 'case' ? itemTitle(it) : ''];
+  if (it.t === 'case') {
+    for (const c of cardsOf(it)) parts.push(c.parts, c.judge, c.court, c.desc, c.proc);
+    for (const r of (S.hearings[it.id] || []).slice(-30)) parts.push(r.judges, r.involved, r.court);
+    const e = esOf(it);
+    if (e) parts.push(e.court);
+  }
+  return normText(parts.filter(Boolean).join(' '));
+}
+function caseListHtml() {
+  const arch = S.cfilter === 'arch';
+  const all = active();
+  // Номер справи шукаємо як є, слова без розділових знаків. Одна літера (ініціал) не враховується.
+  const toks = (S.cq || '').trim().split(/\s+/).filter(Boolean).flatMap((w) => (/\d\/\d/.test(w) ? [normText(w)] : tokenize(w).filter((t) => t.length > 1 || /\d/.test(t))));
+  const shown = toks.length ? all.filter((i) => { const hay = caseHay(i); return toks.every((t) => hay.includes(t)); }) : all.filter((i) => !!i.arch === arch);
   const cases = shown.filter((i) => i.t === 'case');
   const kws = shown.filter((i) => i.t === 'kw');
   const now = kyivNowIso();
-  let out = `<div class="head"><h1>Справи</h1><button class="btn sm" data-act="go-search">Додати</button></div>
-    <div class="seg"><button data-act="cfilter" data-f="live" class="${arch ? '' : 'on'}">Активні (${all.length - nArch})</button><button data-act="cfilter" data-f="arch" class="${arch ? 'on' : ''}">Архів (${nArch})</button></div>`;
-  if (cases.length > 1) {
-    out += `<label for="sortSel">Сортування</label><select id="sortSel" data-set="sort">${SORTS.map(([v, t]) => `<option value="${v}" ${S.set.sort === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
-  }
+  let out = '';
+  if (toks.length) out += `<p class="note">Знайдено: ${shown.length}. Пошук охоплює активні справи і архів.</p>`;
+  if (!shown.length && toks.length) return out + `<div class="empty"><b>Нічого не знайдено</b>Спробуйте прізвище без ініціалів або частину номера справи.</div>`;
   if (!shown.length) {
     out += arch ? `<div class="empty"><b>Архів порожній</b>Відкрийте справу і натисніть «В архів». Архівні справи не оновлюються і не дають нагадувань.</div>`
       : `<div class="empty"><b>Справ ще немає</b>Знайдіть справу за номером або додайте запит за учасником.</div>`;
@@ -1319,7 +1344,7 @@ function viewCases() {
     const nd = docsBy.get(it.id) || 0;
     out += `<button class="card" data-act="open" data-id="${h(it.id)}"><div class="t">${h(itemTitle(it))}</div>
       <div class="m">№ ${h(it.number)}${court ? ` · ${h(court)}` : ''}</div>
-      ${arch ? '' : `<div class="m">${it.nh ? 'Засідання не відстежуються' : next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>${next.manual ? ' (вручну)' : ''}` : 'Призначених засідань немає'}</div>`}
+      ${it.arch ? (toks.length ? '<div class="m"><span class="tag past">архів</span></div>' : '') : `<div class="m">${it.nh ? 'Засідання не відстежуються' : next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>${next.manual ? ' (вручну)' : ''}` : 'Призначених засідань немає'}</div>`}
       ${statusLineOf(cs)}
       ${esOf(it) ? `<div class="m">Е-суд: останній документ ${h(fmtD(esOf(it).last))}</div>` : ''}
       ${it.note ? `<div class="m clamp">${h(it.note)}</div>` : ''}
@@ -1329,9 +1354,9 @@ function viewCases() {
   for (const it of kws) {
     const rows = (S.hearings[it.id] || []).filter((r) => r.iso >= now);
     out += `<button class="card" data-act="open" data-id="${h(it.id)}"><div class="t">${h(it.title || it.query)}</div>
-      <div class="m">${it.court ? `Суд: ${h(it.court)} · ` : ''}${arch ? 'в архіві' : `майбутніх засідань: ${rows.length}`}</div></button>`;
+      <div class="m">${it.court ? `Суд: ${h(it.court)} · ` : ''}${it.arch ? 'в архіві' : `майбутніх засідань: ${rows.length}`}</div></button>`;
   }
-  if (!arch) {
+  if (!arch && !toks.length) {
     const nc = archCandidates().length;
     out += `<div class="btns">${nc ? `<button class="btn sec" data-act="ac-open">Справи для архіву (${nc})</button>` : ''}<button class="btn sec" data-act="import">Імпорт справ зі старого застосунку</button></div>`;
   }
@@ -1832,7 +1857,10 @@ document.addEventListener('click', async (e) => {
   } else if (a === 'open') {
     if (el.dataset.id) openItem(el.dataset.id);
   } else if (a === 'close') closeDlg();
-  else if (a === 'share') openShare(el.dataset.id, el.dataset.uid);
+  else if (a === 'cq-clear') {
+    S.cq = '';
+    render();
+  } else if (a === 'share') openShare(el.dataset.id, el.dataset.uid);
   else if (a === 'share-go') {
     try {
       await navigator.share({ text: el.dataset.text });
@@ -1952,6 +1980,12 @@ document.addEventListener('submit', (e) => {
   S.search.q = f.q.value;
   S.search.court = f.court ? f.court.value : '';
   runSearch();
+});
+document.addEventListener('input', (e) => {
+  if (e.target.id !== 'caseQ') return;
+  S.cq = e.target.value;
+  const l = $('#caseList');
+  if (l) l.innerHTML = caseListHtml();
 });
 document.addEventListener('change', (e) => {
   const t = e.target;
