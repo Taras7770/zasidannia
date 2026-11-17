@@ -390,6 +390,7 @@ export function buildIcs(hearings, titleOf) {
       fold(`LOCATION:${esc(h.court + (h.room ? `, зал ${h.room}` : ''))}`),
       fold(`DESCRIPTION:${esc(`Справа № ${h.case}\n${h.judges}\n${h.involved}\n${h.desc}`)}`),
       'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:Засідання завтра', 'TRIGGER:-P1D', 'END:VALARM',
+      'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:Засідання за 3 години', 'TRIGGER:-PT3H', 'END:VALARM',
       'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:Засідання за годину', 'TRIGGER:-PT1H', 'END:VALARM',
       'END:VEVENT');
   }

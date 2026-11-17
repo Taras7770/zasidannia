@@ -28,7 +28,7 @@ const S = {
   seen: new Set(LS.get('ct.seen', [])),
   fresh: new Set(LS.get('ct.new', [])),
   init: new Set(LS.get('ct.init', [])),
-  set: Object.assign({ repo: '', token: '', r1d: true, r1h: true, rdoc: true, sort: 'next' }, LS.get('ct.set', {})),
+  set: Object.assign({ repo: '', token: '', r1d: true, r3h: true, r1h: true, rmorn: true, mornT: '07:00', rdoc: true, sort: 'next' }, LS.get('ct.set', {})),
   dec: LS.get('ct.dec', {}),
   rd: Object.assign({ ra: '', read: {} }, LS.get('ct.rd', {})),
   decMeta: LS.get('ct.decmeta', null),
@@ -1067,11 +1067,34 @@ function reminderList() {
     const t = kyivDate(x.iso).getTime();
     const time = x.iso.slice(11);
     const place = x.court + (x.room ? `, зал ${x.room}` : '');
-    for (const [on, min, title] of [[S.set.r1d, 1440, `Завтра о ${time} засідання`], [S.set.r1h, 60, `Через годину засідання (${time})`]]) {
+    for (const [on, min, title] of [[S.set.r1d, 1440, `Завтра о ${time} засідання`], [S.set.r3h, 180, `Через 3 години засідання (${time})`], [S.set.r1h, 60, `Через годину засідання (${time})`]]) {
       const at = t - min * 60000;
       if (on && at > now + 20000) {
         out.push({ id: hash32(`${x.uid}|${min}`) & 0x7fffffff, at, title, body: `${hTitle(x)}\n№ ${x.case}. ${place}` });
       }
+    }
+  }
+  // Ранкове зведення: усі мої засідання цього дня одним сповіщенням
+  if (S.set.rmorn) {
+    const mt = /^\d\d:\d\d$/.test(S.set.mornT || '') ? S.set.mornT : '07:00';
+    const days = new Map();
+    for (const x of agenda(0).filter((y) => y.mine)) {
+      const d = x.iso.slice(0, 10);
+      if (!days.has(d)) days.set(d, []);
+      days.get(d).push(x);
+    }
+    const busy = busyList(0);
+    let n = 0;
+    for (const [d, xs] of days) {
+      if (n >= 30) break;
+      const at = kyivDate(`${d}T${mt}`).getTime();
+      if (at <= now + 20000) continue;
+      n++;
+      const lines = xs.map((x) => `${x.iso.slice(11)} · ${hTitle(x)}${x.room ? ` · зал ${x.room}` : ''}${x.clash ? ' · НАКЛАДКА' : ''}`);
+      const pairs = busy.filter((e) => e.iso.slice(0, 10) === d).map((e) => `${e.iso.slice(11)}${e.end ? '-' + e.end : ''}`);
+      if (pairs.length) lines.push(`Пари: ${pairs.join(', ')}`);
+      const title = xs.length === 1 ? `Сьогодні засідання о ${xs[0].iso.slice(11)}` : `Сьогодні засідань: ${xs.length}. Перше о ${xs[0].iso.slice(11)}`;
+      out.push({ id: hash32(`morn|${d}`) & 0x7fffffff, at, title, body: lines.join('\n'), inbox: lines });
     }
   }
   // Дати реагування на документи: за 3 дні, за день і в день строку о 09:00
@@ -1097,7 +1120,7 @@ async function scheduleReminders() {
       const perm = await LN('checkPermissions');
       S.notif = perm.display;
       if (perm.display !== 'granted') return;
-      await LN('createChannel', { id: 'hearings', name: 'Судові засідання', description: 'Нагадування за добу і за годину', importance: 5, visibility: 1, vibration: true });
+      await LN('createChannel', { id: 'hearings', name: 'Судові засідання', description: 'Ранкове зведення і нагадування перед засіданням', importance: 5, visibility: 1, vibration: true });
       await LN('createChannel', { id: 'docs', name: 'Документи і строки', description: 'Нові документи і дати реагування', importance: 5, visibility: 1, vibration: true });
       const pend = await LN('getPending');
       if (pend.notifications && pend.notifications.length) {
@@ -1106,7 +1129,7 @@ async function scheduleReminders() {
       if (list.length) {
         await LN('schedule', {
           notifications: list.slice(0, 200).map((n) => ({
-            id: n.id, title: n.title, body: n.body, largeBody: n.body, channelId: n.ch || 'hearings',
+            id: n.id, title: n.title, body: n.inbox ? n.inbox[0] : n.body, ...(n.inbox && n.inbox.length > 1 ? { inboxList: n.inbox, summaryText: 'Засідання на сьогодні' } : { largeBody: n.body }), channelId: n.ch || 'hearings',
             schedule: { at: new Date(n.at).toISOString(), allowWhileIdle: true },
           })),
         });
@@ -1387,7 +1410,10 @@ function viewSettings() {
   <h2>Нагадування</h2>
   <div class="card">
     <div>${nOk ? `<span class="okc">Увімкнено.</span>${isNative && S.notifCount != null ? ` Заплановано сповіщень: ${S.notifCount}.` : ''}` : S.notif === 'denied' ? '<span class="badc">Заборонено в налаштуваннях пристрою.</span>' : 'Вимкнено.'}</div>
+    <label class="chk"><input type="checkbox" data-set="rmorn" ${st.rmorn ? 'checked' : ''}> Зранку: засідання на сьогодні одним сповіщенням</label>
+    <div class="row" style="align-items:center;margin:2px 0 6px 30px"><span class="m" style="margin:0 8px 0 0">Час ранкового зведення</span><input type="time" data-set="mornT" value="${h(st.mornT || '07:00')}" step="300" style="max-width:130px;margin:0" aria-label="Час ранкового зведення"></div>
     <label class="chk"><input type="checkbox" data-set="r1d" ${st.r1d ? 'checked' : ''}> За добу до засідання</label>
+    <label class="chk"><input type="checkbox" data-set="r3h" ${st.r3h ? 'checked' : ''}> За 3 години до засідання</label>
     <label class="chk"><input type="checkbox" data-set="r1h" ${st.r1h ? 'checked' : ''}> За годину до засідання</label>
     <label class="chk"><input type="checkbox" data-set="rdoc" ${st.rdoc ? 'checked' : ''}> Дати реагування на документи: за 3 дні, за день і в день строку о 09:00</label>
     <div class="btns">${nOk ? '' : '<button class="btn" data-act="notif-on">Увімкнути нагадування</button>'}${nOk ? '<button class="btn sec" data-act="notif-test">Перевірити</button>' : ''}</div>
@@ -1897,7 +1923,7 @@ document.addEventListener('change', (e) => {
   if (t.dataset.set) {
     S.set[t.dataset.set] = t.type === 'checkbox' ? t.checked : t.value.trim();
     save();
-    if (t.type === 'checkbox') scheduleReminders();
+    if (t.type === 'checkbox' || t.dataset.set === 'mornT') scheduleReminders().then(() => { if (S.view === 'settings' && !$('#dlg').open) render(); });
     if (t.dataset.set === 'sort') render();
   } else if (t.dataset.item) {
     let val = t.type === 'checkbox' ? t.checked : t.value.trim();
