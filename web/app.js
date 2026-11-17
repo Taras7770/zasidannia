@@ -289,7 +289,7 @@ function busyList(includePastHours = 3) {
 }
 const minOf = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
 function busyCard(x) {
-  return `<div class="card busy"><div class="row"><div class="time">${h(x.iso.slice(11))}${x.end ? `<div class="m">${h(x.end)}</div>` : ''}</div>
+  return `<div class="card busy"><div class="row"><div class="time"><div class="dt">${h(dmy2(x.iso))}</div>${h(x.iso.slice(11))}${x.end ? `<div class="m">${h(x.end)}</div>` : ''}</div>
     <div class="grow"><div class="t">${h(x.title || 'Подія')}</div>
     ${x.place ? `<div class="m">${h(x.place)}</div>` : ''}
     <div style="margin-top:4px"><span class="tag busy">${h(x.kind || 'пара')}</span>${x.clash ? '<span class="tag new">накладка із засіданням</span>' : ''}</div></div></div></div>`;
@@ -1202,12 +1202,13 @@ function statusLine() {
   if (S.err) s += `<div class="badc">${h(S.err)}</div>`;
   return `<p class="sub">${s}</p>`;
 }
+const dmy2 = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(2, 4)}`;
 function hearingCard(x, opts = {}) {
   const isNew = S.fresh.has(x.uid || rowUid(x));
   const past = x.iso < kyivNowIso();
   const n = dayDiff(x.iso.slice(0, 10));
   return `<button class="card" data-act="${opts.menu ? 'hmenu' : 'open'}" data-uid="${h(x.uid || '')}" data-id="${h(x.item ? x.item.id : '')}" data-case="${h(x.case)}">
-    <div class="row"><div class="time">${h(x.iso.slice(11))}${opts.date ? `<div class="m">${h(x.iso.slice(8, 10) + '.' + x.iso.slice(5, 7))}</div>` : ''}</div>
+    <div class="row"><div class="time"><div class="dt">${h(dmy2(x.iso))}</div>${h(x.iso.slice(11))}</div>
     <div class="grow"><div class="t">${h(opts.title ?? hTitle(x))}</div>
     <div class="m">№ ${h(x.case)}${x.room ? ` · зал ${h(x.room)}` : ''}</div>
     <div class="m">${h(x.court)}</div>
@@ -1552,7 +1553,7 @@ function openItem(id) {
       <label>Власна назва справи</label><input type="text" data-item="${h(it.id)}" data-field="title" placeholder="${h(itemTitle({ ...it, title: '' }))}" value="${h(it.title || '')}">
       <label>Нотатка</label><textarea rows="2" data-item="${h(it.id)}" data-field="note">${h(it.note || '')}</textarea>
       <label class="chk"><input type="checkbox" data-item="${h(it.id)}" data-field="nh" data-inv="1" ${it.nh ? '' : 'checked'}> Стежити за засіданнями цієї справи</label>
-      <h2>Майбутні засідання</h2>${fut.length ? fut.map(hc).join('') : '<p class="note">Призначених засідань немає.</p>'}
+      <h2>Майбутні засідання</h2>${fut.length ? `<div class="btns" style="margin-bottom:8px"><button class="btn sec sm" data-act="share" data-id="${h(it.id)}">Картка для клієнта: усі дати</button></div>` : ''}${fut.length ? fut.map(hc).join('') : '<p class="note">Призначених засідань немає.</p>'}
       <form data-form="mh" data-id="${h(it.id)}" class="card">
         <div class="t">Додати засідання вручну</div>
         <div class="row" style="margin-top:8px"><input type="date" name="d" required min="${h(kyivToday())}" aria-label="Дата"><input type="time" name="t" required value="10:00" step="300" aria-label="Час"></div>
@@ -1610,6 +1611,7 @@ function openHearingMenu(uid) {
   let btns = '';
   if (isCase) {
     btns += `<button class="mi" data-act="open" data-id="${h(it.id)}"><b>Відкрити справу</b><small>Рішення, стадія, учасники, історія</small></button>
+      <button class="mi" data-act="share" data-id="${h(it.id)}" data-uid="${h(x.uid)}"><b>Картка для клієнта</b><small>Чистий екран для знімка і текст для повідомлення</small></button>
       <button class="mi" data-act="hm-add"><b>Додати наступне засідання</b><small>Дата, яку суд погодив під час відкладення</small></button>
       <form data-form="mh" data-id="${h(it.id)}" data-sheet="1" class="card" id="hmForm" hidden>
         <div class="row"><input type="date" name="d" required min="${h(kyivToday())}" aria-label="Дата"><input type="time" name="t" required value="${h(x.iso.slice(11))}" step="300" aria-label="Час"></div>
@@ -1631,6 +1633,34 @@ function openHearingMenu(uid) {
     <button class="btn sec wide" data-act="close">Закрити</button>`;
   S.openId = null;
   showDlg(true);
+}
+
+// ---------- Картка для клієнта: чистий екран для знімка і текст для повідомлення ----------
+function openShare(itemId, uid) {
+  const it = S.items.find((i) => i.id === itemId);
+  if (!it) return;
+  const now = kyivNowIso();
+  let rows = itemHearings(it).filter((r) => r.iso >= now);
+  if (uid) {
+    const one = agenda().find((y) => y.uid === uid);
+    if (one) rows = [one];
+  }
+  const wd = (iso) => dayLabel(iso.slice(0, 10)).main.split(', ')[1] || '';
+  const full = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}`;
+  const text = [`Справа № ${it.number}`, itemTitle(it), ...rows.map((r) => `Засідання: ${full(r.iso)} (${wd(r.iso)}) о ${r.iso.slice(11)}. ${r.court}${r.room ? `, зал ${r.room}` : ''}${r.manual ? ' (дату погоджено в засіданні, суд ще не вніс її в розклад)' : ''}`)].join('\n');
+  $('#dlgBody').innerHTML = `<div class="dh"><h1>Картка для клієнта</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
+    <div class="share">
+      <div class="sh-top">${rows.length > 1 ? 'Судові засідання' : 'Судове засідання'}</div>
+      <div class="sh-case">${h(itemTitle(it))}</div>
+      <div class="sh-num">Справа № ${h(it.number)}</div>
+      ${rows.length ? rows.map((r) => `<div class="sh-row"><div class="sh-when"><div class="sh-date">${h(full(r.iso))}</div><div class="sh-time">${h(r.iso.slice(11))}</div><div class="sh-wd">${h(wd(r.iso))}</div></div>
+        <div class="sh-where">${h(r.court)}${r.room ? `<br>зал ${h(r.room)}` : ''}${r.manual ? '<br><span class="tag man">дату погоджено в засіданні</span>' : ''}</div></div>`).join('') : '<p class="note">Призначених засідань немає.</p>'}
+    </div>
+    <div class="btns"><button class="btn" data-act="copy" data-text="${h(text)}">Скопіювати текст</button>${navigator.share ? `<button class="btn sec" data-act="share-go" data-text="${h(text)}">Надіслати</button>` : ''}</div>
+    <p class="note">Зробіть знімок екрана або скопіюйте текст для повідомлення.</p>
+    <button class="btn sec wide" data-act="close">Закрити</button>`;
+  S.openId = null;
+  showDlg();
 }
 
 // ---------- Нове засідання вручну (з вибором справи) ----------
@@ -1802,7 +1832,12 @@ document.addEventListener('click', async (e) => {
   } else if (a === 'open') {
     if (el.dataset.id) openItem(el.dataset.id);
   } else if (a === 'close') closeDlg();
-  else if (a === 'copy') {
+  else if (a === 'share') openShare(el.dataset.id, el.dataset.uid);
+  else if (a === 'share-go') {
+    try {
+      await navigator.share({ text: el.dataset.text });
+    } catch { /* користувач закрив вікно */ }
+  } else if (a === 'copy') {
     try {
       await navigator.clipboard.writeText(el.dataset.text);
       toast('Скопійовано');

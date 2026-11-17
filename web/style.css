@@ -163,3 +163,18 @@ body::before { content: ''; position: fixed; top: 0; left: 0; right: 0; z-index:
 details.m summary { cursor: pointer; color: var(--acc2); margin-top: 4px; }
 
 .col { display: flex; flex-direction: column; gap: 6px; flex: none; }
+
+/* Дата над часом у кожній картці засідання */
+.time .dt { font-size: 12px; font-weight: 600; color: var(--mut); line-height: 1.2; margin-bottom: 1px; }
+.time { min-width: 62px; }
+/* Картка для клієнта */
+.share { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px 16px; margin: 6px 0 14px; }
+.sh-top { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--mut); }
+.sh-case { font-size: 19px; font-weight: 700; margin-top: 6px; line-height: 1.25; }
+.sh-num { font-size: 16px; color: var(--acc2); font-weight: 600; margin-top: 4px; }
+.sh-row { display: flex; gap: 14px; align-items: flex-start; border-top: 1px solid var(--line); margin-top: 14px; padding-top: 14px; }
+.sh-when { flex: none; min-width: 112px; }
+.sh-date { font-size: 17px; font-weight: 700; }
+.sh-time { font-size: 30px; font-weight: 800; color: var(--acc2); line-height: 1.1; font-variant-numeric: tabular-nums; }
+.sh-wd { font-size: 13px; color: var(--mut); }
+.sh-where { font-size: 15px; line-height: 1.35; }
