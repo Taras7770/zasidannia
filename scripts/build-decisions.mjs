@@ -99,13 +99,18 @@ if (args.zip) {
   const years = [];
   for (let y = +cutoff.slice(0, 4); y <= +today.slice(0, 4); y++) years.push(y);
   mkdirSync('/tmp/edrsr', { recursive: true });
+  // Спочатку шукаємо всі архіви, щоб не завантажувати гігабайти даремно
+  const infos = {};
   for (const y of years) {
-    const info = await findZip(y);
-    if (!info) {
+    infos[y] = await findZip(y);
+    if (!infos[y]) {
       // Без архіву за рік зникли б усі рішення цього року. Краще залишити попередні дані.
       console.error(`Архів за ${y} рік не знайдено. Дані про рішення не оновлено.`);
       process.exit(2);
     }
+  }
+  for (const y of years) {
+    const info = infos[y];
     const file = `/tmp/edrsr/${y}.zip`;
     console.log(`Завантаження ${info.url} (${info.size} байт, оновлено ${info.modified})`);
     const r = await fetch(info.url, { headers: UA });
