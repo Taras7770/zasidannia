@@ -54,9 +54,31 @@ jobs:
         run: |
           node --max-old-space-size=6000 scripts/build-decisions.mjs --out=web/data
           du -sh web/data/d 2>/dev/null || true
-      - name: Залишити попередні дані про рішення
+      # Якщо свіжого архіву ЄДРСР немає, залишаємо попередні дані про рішення:
+      # спочатку з кешу завдання, а якщо кешу ще немає, то з опублікованого сайту.
+      - name: Попередні дані про рішення з кешу
         if: steps.dec.outcome == 'failure' && steps.data.outputs.changed != 'false'
+        run: rm -rf web/data/d web/data/dec.json
+      - uses: actions/cache/restore@v4
+        id: deccache
+        if: steps.dec.outcome == 'failure' && steps.data.outputs.changed != 'false'
+        with:
+          path: |
+            web/data/d
+            web/data/dec.json
+          key: dec-${{ github.run_id }}
+          restore-keys: dec-
+      - name: Попередні дані про рішення з сайту
+        id: decsite
+        if: steps.dec.outcome == 'failure' && steps.data.outputs.changed != 'false' && hashFiles('web/data/dec.json') == ''
         run: node scripts/restore-decisions.mjs "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}" web/data
+      - uses: actions/cache/save@v4
+        if: steps.data.outputs.changed != 'false' && (steps.dec.outcome == 'success' || steps.decsite.outcome == 'success')
+        with:
+          path: |
+            web/data/d
+            web/data/dec.json
+          key: dec-${{ github.run_id }}
       - name: Самоперевірка пошуку на реальних даних
         if: steps.data.outputs.changed != 'false'
         run: node scripts/selfcheck.mjs web/data 200
