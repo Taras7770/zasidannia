@@ -12,6 +12,8 @@ const VERSION = 1;
 const DATASET = '3a321301-a06f-487b-9d19-e6b917250aee';
 const CKAN = `https://data.gov.ua/api/3/action/package_show?id=${DATASET}`;
 const FALLBACK = `https://data.gov.ua/dataset/${DATASET}/resource/98d6ba0d-1c18-4835-ae68-bfc0af724bfa/download/spisok-sprav-priznachenih-do-rozglyadu.csv`;
+// Той самий набір на сайті ДСА (court.gov.ua). Основне джерело: data.gov.ua з 19.11.2026 відповідає 403.
+const DSA_PASSPORT = 'https://dsa.court.gov.ua/open_data_json.php?json=513';
 const UA = { 'User-Agent': 'zasidannia-open-data-reader/1.0 (personal court calendar)' };
 
 const args = Object.fromEntries(
@@ -36,6 +38,22 @@ function setOutput(k, v) {
 
 async function sourceInfo() {
   if (args.src) return { url: args.src, modified: args.modified || 'local' };
+  try {
+    const pass = await (await fetch(DSA_PASSPORT, { headers: UA })).json();
+    const url = pass['Файли'].map((o) => Object.values(o)[0]).find((u) => /\.csv$/i.test(u));
+    if (!url) throw new Error('у паспорті набору немає CSV');
+    const h = await fetch(url, { method: 'HEAD', headers: UA });
+    if (!h.ok) throw new Error(`HTTP ${h.status}`);
+    const lm = h.headers.get('last-modified');
+    return {
+      url,
+      modified: lm ? new Date(lm).toISOString() : new Date().toISOString(),
+      size: +h.headers.get('content-length') || undefined,
+      site: 'court.gov.ua',
+    };
+  } catch (e) {
+    console.warn('Сайт ДСА недоступний, пробую data.gov.ua:', e.message);
+  }
   try {
     const r = await fetch(CKAN, { headers: UA });
     const j = await r.json();
@@ -205,7 +223,7 @@ const meta = {
   v: VERSION,
   built: new Date().toISOString(),
   sourceModified: src.modified,
-  source: 'ДСА України, набір «Список справ призначених до розгляду», data.gov.ua, CC BY',
+  source: `ДСА України, набір «Список справ призначених до розгляду», ${src.site || 'data.gov.ua'}, CC BY`,
   from: cutoff,
   to: maxIso,
   rows: finalRows,

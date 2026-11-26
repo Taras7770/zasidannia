@@ -33,7 +33,33 @@ const NFILES = +(args.files || 0) || 6000 * (+today.slice(0, 4) - +cutoff.slice(
 const PARTS = 128;
 const TMP = args.tmp || '/tmp/dparts';
 
+// Паспорти тих самих архівів на сайті ДСА (court.gov.ua). Архіву за 2026 рік там немає.
+const DSA = { 2023: 826, 2024: 829, 2025: 879 };
+async function findZipDsa(year) {
+  if (!DSA[year]) return null;
+  const pass = await (await fetch(`https://dsa.court.gov.ua/open_data_json.php?json=${DSA[year]}`, { headers: UA })).json();
+  const url = pass['Файли'].map((o) => Object.values(o)[0]).find((u) => /\.zip$/i.test(u));
+  if (!url) return null;
+  const h = await fetch(url, { method: 'HEAD', headers: UA });
+  if (!h.ok) return null;
+  const lm = h.headers.get('last-modified');
+  return { url, modified: lm ? new Date(lm).toISOString() : 'dsa', size: +h.headers.get('content-length') || 0 };
+}
 async function findZip(year) {
+  try {
+    const r = await findZipDsa(year);
+    if (r) return r;
+  } catch (e) {
+    console.warn(`Сайт ДСА (${year}):`, e.message);
+  }
+  try {
+    return await findZipGov(year);
+  } catch (e) {
+    console.warn(`data.gov.ua (${year}):`, e.message);
+    return null;
+  }
+}
+async function findZipGov(year) {
   const pick = (pkg) => {
     const r = (pkg.resources || []).filter((x) => /zip/i.test(x.format) && x.url.includes(String(year)))
       .sort((a, b) => (a.last_modified < b.last_modified ? 1 : -1))[0];
@@ -76,8 +102,9 @@ if (args.zip) {
   for (const y of years) {
     const info = await findZip(y);
     if (!info) {
-      console.warn(`Архів за ${y} рік не знайдено`);
-      continue;
+      // Без архіву за рік зникли б усі рішення цього року. Краще залишити попередні дані.
+      console.error(`Архів за ${y} рік не знайдено. Дані про рішення не оновлено.`);
+      process.exit(2);
     }
     const file = `/tmp/edrsr/${y}.zip`;
     console.log(`Завантаження ${info.url} (${info.size} байт, оновлено ${info.modified})`);

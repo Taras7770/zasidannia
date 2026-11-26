@@ -9,6 +9,7 @@ on:
       - 'scripts/build-data.mjs'
       - 'scripts/build-decisions.mjs'
       - 'scripts/tsv.mjs'
+      - 'scripts/restore-decisions.mjs'
       - 'scripts/selfcheck.mjs'
       - '.github/workflows/data.yml'
   schedule:
@@ -48,10 +49,14 @@ jobs:
           node --max-old-space-size=6000 scripts/build-data.mjs --out=web/data
           du -sh web/data 2>/dev/null || true
       - name: Побудова даних про судові рішення (ЄДРСР)
+        id: dec
         continue-on-error: true
         run: |
           node --max-old-space-size=6000 scripts/build-decisions.mjs --out=web/data
           du -sh web/data/d 2>/dev/null || true
+      - name: Залишити попередні дані про рішення
+        if: steps.dec.outcome == 'failure' && steps.data.outputs.changed != 'false'
+        run: node scripts/restore-decisions.mjs "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}" web/data
       - name: Самоперевірка пошуку на реальних даних
         if: steps.data.outputs.changed != 'false'
         run: node scripts/selfcheck.mjs web/data 200
