@@ -1203,6 +1203,13 @@ function statusLine() {
   return `<p class="sub">${s}</p>`;
 }
 const dmy2 = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(2, 4)}`;
+// Позначка «нове» зникає, коли користувач відкрив засідання
+function markHearingSeen(uid) {
+  if (uid && S.fresh.delete(uid)) {
+    save();
+    render();
+  }
+}
 function hearingCard(x, opts = {}) {
   const isNew = S.fresh.has(x.uid || rowUid(x));
   const past = x.iso < kyivNowIso();
@@ -1233,7 +1240,8 @@ function viewAgenda() {
   let list = hearings;
   if (f === 'mine') list = hearings.filter((x) => x.mine);
   if (f !== 'court') list = list.concat(busy).sort((x, y) => (x.iso < y.iso ? -1 : x.iso > y.iso ? 1 : 0));
-  let out = `<div class="head"><h1>Засідання</h1><button class="btn sm" data-act="mh-new">+ Вручну</button><button class="btn sec sm" data-act="refresh" ${S.busy ? 'disabled' : ''}>Оновити</button></div>${statusLine()}`;
+  const nFresh = hearings.filter((x) => S.fresh.has(x.uid)).length;
+  let out = `<div class="head"><h1>Засідання</h1><button class="btn sm" data-act="mh-new">+ Вручну</button><button class="btn sec sm" data-act="refresh" ${S.busy ? 'disabled' : ''}>Оновити</button></div>${statusLine()}${nFresh > 1 ? `<div><button class="btn ghost sm" data-act="fresh-all">Позначити всі нові засідання (${nFresh}) переглянутими</button></div>` : ''}`;
   if (hasOthers || hasBusy) {
     out += `<div class="seg"><button data-act="afilter" data-f="all" class="${f === 'all' ? 'on' : ''}">Усе</button>
       ${hasBusy ? `<button data-act="afilter" data-f="court" class="${f === 'court' ? 'on' : ''}">Лише суд</button>` : ''}
@@ -1487,10 +1495,6 @@ function softRender() {
   if (S.view === 'agenda' || S.view === 'cases' || S.view === 'dec' || S.view === 'docs') render();
 }
 function setView(view) {
-  if (S.view === 'agenda' && view !== 'agenda' && S.fresh.size) {
-    S.fresh.clear();
-    save();
-  }
   S.view = view;
   render();
   window.scrollTo(0, 0);
@@ -1823,7 +1827,13 @@ document.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const a = el.dataset.act;
+  if ((a === 'hmenu' || a === 'open') && el.dataset.uid) markHearingSeen(el.dataset.uid);
   if (a === 'refresh') refreshAll();
+  else if (a === 'fresh-all') {
+    S.fresh.clear();
+    save();
+    render();
+  }
   else if (a === 'mh-new') openManual();
   else if (a === 'mh-del') {
     removeManual(el.dataset.mid);
