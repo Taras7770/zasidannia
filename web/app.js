@@ -947,10 +947,10 @@ function itemHearings(it) {
     if (days.has(m.iso.slice(0, 10))) {
       // суд уже вніс засідання на цей день: показуємо його, а різницю в часі позначаємо
       const i = rows.findIndex((r) => !r.manual && r.iso.slice(0, 10) === m.iso.slice(0, 10));
-      if (i >= 0 && rows[i].iso !== m.iso) rows[i] = { ...rows[i], wasManual: m.iso.slice(11) };
+      if (i >= 0 && (rows[i].iso !== m.iso || m.src === 'pov')) rows[i] = { ...rows[i], wasManual: rows[i].iso !== m.iso ? m.iso.slice(11) : rows[i].wasManual, pov: rows[i].pov || m.src === 'pov' };
       continue;
     }
-    rows.push({ iso: m.iso, case: it.number, court, room: '', judges: '', involved: '', desc: m.note || '', manual: true, mid: m.id });
+    rows.push({ iso: m.iso, case: it.number, court: court || m.court || '', room: m.room || '', judges: '', involved: '', desc: m.note || '', manual: true, pov: m.src === 'pov', mid: m.id });
   }
   return rows.sort((a, b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0));
 }
@@ -975,7 +975,7 @@ function checkManual() {
       notices.push({
         id: hash32(`mh|${m.id}|${r.iso}`) & 0x7fffffff,
         title: `Суд призначив інший час: ${r.iso.slice(11)} замість ${m.iso.slice(11)}`,
-        body: `${itemTitle(it)}\n№ ${it.number}, ${fmtD(day)}. Вручну було ${m.iso.slice(11)}, суд вніс ${r.iso.slice(11)}.`,
+        body: `${itemTitle(it)}\n№ ${it.number}, ${fmtD(day)}. ${m.src === 'pov' ? 'За повісткою' : 'Вручну'} було ${m.iso.slice(11)}, суд вніс ${r.iso.slice(11)}.`,
       });
     }
   }
@@ -1220,7 +1220,7 @@ function hearingCard(x, opts = {}) {
     <div class="m">№ ${h(x.case)}${x.room ? ` · зал ${h(x.room)}` : ''}</div>
     <div class="m">${h(x.court)}</div>
     <div class="m clamp">${h(x.desc)}</div>
-    <div style="margin-top:4px">${x.manual ? '<span class="tag man">вручну</span>' : ''}${x.wasManual ? `<span class="tag new">час змінено, вручну було ${h(x.wasManual)}</span>` : ''}${x.clash ? `<span class="tag new">накладка${x.clashBusy ? `: ${h(x.clashBusy)}` : ''}</span>` : ''}${isNew ? '<span class="tag new">нове</span>' : ''}${past ? '<span class="tag past">минуло</span>' : n <= 1 && !opts.noSoon ? `<span class="tag soon">${n === 0 ? 'сьогодні' : 'завтра'}</span>` : ''}${x.item && x.item.t === 'kw' ? `<span class="tag">за запитом: ${h(x.item.query)}</span>` : ''}</div>
+    <div style="margin-top:4px">${x.manual ? `<span class="tag man">${x.pov ? 'за повісткою' : 'вручну'}</span>` : x.pov ? '<span class="tag man">є повістка</span>' : ''}${x.wasManual ? `<span class="tag new">час змінено, ${x.pov ? 'за повісткою' : 'вручну'} було ${h(x.wasManual)}</span>` : ''}${x.clash ? `<span class="tag new">накладка${x.clashBusy ? `: ${h(x.clashBusy)}` : ''}</span>` : ''}${isNew ? '<span class="tag new">нове</span>' : ''}${past ? '<span class="tag past">минуло</span>' : n <= 1 && !opts.noSoon ? `<span class="tag soon">${n === 0 ? 'сьогодні' : 'завтра'}</span>` : ''}${x.item && x.item.t === 'kw' ? `<span class="tag">за запитом: ${h(x.item.query)}</span>` : ''}</div>
     </div></div></button>`;
 }
 function viewAgenda() {
@@ -1352,7 +1352,7 @@ function caseListHtml() {
     const nd = docsBy.get(it.id) || 0;
     out += `<button class="card" data-act="open" data-id="${h(it.id)}"><div class="t">${h(itemTitle(it))}</div>
       <div class="m">№ ${h(it.number)}${court ? ` · ${h(court)}` : ''}</div>
-      ${it.arch ? (toks.length ? '<div class="m"><span class="tag past">архів</span></div>' : '') : `<div class="m">${it.nh ? 'Засідання не відстежуються' : next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>${next.manual ? ' (вручну)' : ''}` : 'Призначених засідань немає'}</div>`}
+      ${it.arch ? (toks.length ? '<div class="m"><span class="tag past">архів</span></div>' : '') : `<div class="m">${it.nh ? 'Засідання не відстежуються' : next ? `Наступне засідання: <b>${h(fmtDT(next.iso))}</b>${next.manual ? (next.pov ? ' (за повісткою)' : ' (вручну)') : ''}` : 'Призначених засідань немає'}</div>`}
       ${statusLineOf(cs)}
       ${esOf(it) ? `<div class="m">Е-суд: останній документ ${h(fmtD(esOf(it).last))}</div>` : ''}
       ${it.note ? `<div class="m clamp">${h(it.note)}</div>` : ''}
@@ -1647,7 +1647,7 @@ function openHearingMenu(uid) {
         <input type="text" name="note" maxlength="120" placeholder="Примітка: зал, суддя, що погоджено">
         <button class="btn wide" style="margin-top:4px">Додати засідання</button>
       </form>
-      ${x.manual ? `<button class="mi bad" data-act="mh-del" data-mid="${h(x.mid)}"><b>Видалити цей запис</b><small>Засідання введено вручну</small></button>` : ''}
+      ${x.manual ? `<button class="mi bad" data-act="mh-del" data-mid="${h(x.mid)}"><b>Видалити цей запис</b><small>${x.pov ? 'Засідання внесено за повісткою' : 'Засідання введено вручну'}</small></button>` : ''}
       <button class="mi" data-act="hm-nh" data-id="${h(it.id)}"><b>Не стежити за засіданнями справи</b><small>Справа залишиться у списку. Рішення надходитимуть.</small></button>`;
   } else {
     btns += `<button class="mi" data-act="watch-case" data-case="${h(x.case.split('(')[0])}"><b>Стежити за цією справою</b><small>Додати справу до мого списку</small></button>
@@ -1676,14 +1676,14 @@ function openShare(itemId, uid) {
   }
   const wd = (iso) => dayLabel(iso.slice(0, 10)).main.split(', ')[1] || '';
   const full = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}`;
-  const text = [`Справа № ${it.number}`, itemTitle(it), ...rows.map((r) => `Засідання: ${full(r.iso)} (${wd(r.iso)}) о ${r.iso.slice(11)}. ${r.court}${r.room ? `, зал ${r.room}` : ''}${r.manual ? ' (дату погоджено в засіданні, суд ще не вніс її в розклад)' : ''}`)].join('\n');
+  const text = [`Справа № ${it.number}`, itemTitle(it), ...rows.map((r) => `Засідання: ${full(r.iso)} (${wd(r.iso)}) о ${r.iso.slice(11)}. ${r.court}${r.room ? `, зал ${r.room}` : ''}${r.manual ? (r.pov ? ' (за судовою повісткою)' : ' (дату погоджено в засіданні, суд ще не вніс її в розклад)') : ''}`)].join('\n');
   $('#dlgBody').innerHTML = `<div class="dh"><h1>Картка для клієнта</h1><button class="x" data-act="close" aria-label="Закрити">×</button></div>
     <div class="share">
       <div class="sh-top">${rows.length > 1 ? 'Судові засідання' : 'Судове засідання'}</div>
       <div class="sh-case">${h(itemTitle(it))}</div>
       <div class="sh-num">Справа № ${h(it.number)}</div>
       ${rows.length ? rows.map((r) => `<div class="sh-row"><div class="sh-when"><div class="sh-date">${h(full(r.iso))}</div><div class="sh-time">${h(r.iso.slice(11))}</div><div class="sh-wd">${h(wd(r.iso))}</div></div>
-        <div class="sh-where">${h(r.court)}${r.room ? `<br>зал ${h(r.room)}` : ''}${r.manual ? '<br><span class="tag man">дату погоджено в засіданні</span>' : ''}</div></div>`).join('') : '<p class="note">Призначених засідань немає.</p>'}
+        <div class="sh-where">${h(r.court)}${r.room ? `<br>зал ${h(r.room)}` : ''}${r.manual ? `<br><span class="tag man">${r.pov ? 'за судовою повісткою' : 'дату погоджено в засіданні'}</span>` : ''}</div></div>`).join('') : '<p class="note">Призначених засідань немає.</p>'}
     </div>
     <div class="btns"><button class="btn" data-act="copy" data-text="${h(text)}">Скопіювати текст</button>${navigator.share ? `<button class="btn sec" data-act="share-go" data-text="${h(text)}">Надіслати</button>` : ''}</div>
     <p class="note">Зробіть знімок екрана або скопіюйте текст для повідомлення.</p>
